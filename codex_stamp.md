@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 15
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:49 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 이제 메인 graph config 자체에 edge-decay GT spreading이 들어가고, 기본 training target도 `y_edge_decay`를 사용한다. raw point GT(`y`)는 비교/진단용으로만 유지된다. notebook은 MPS가 아니면 즉시 중단되며, overfit troubleshooting에서는 `positive_weight x count_weight_alpha` full grid로 point GT와 smoothed GT를 함께 비교할 수 있다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- GT spreading을 troubleshooting 전용이 아니라 메인 경로에 반영했다. 기본 graph는 `(1.0, 0.6, 0.2)` hop decay를 만들고, 기본 training target은 `y_edge_decay`를 쓰도록 바꿨다. notebook도 MPS 강제 방식으로 정리했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이번 턴은 설정 승격과 정리 단계라 full notebook 재실행은 하지 않았다. `y_edge_decay` 메인화 이후 patch set 성능과 ranking 변화는 아직 다시 검증되지 않았다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- MPS에서 smoothed GT 기본 경로 재실행 및 patch set 검증
+
 ## Entry 14
 
 1. 업데이트 날짜, 시각

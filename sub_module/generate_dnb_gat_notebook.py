@@ -45,9 +45,11 @@ NOTEBOOK_CELLS = [
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
 - Switch `SCENE_MODE` to `kr_full_scene` to run the same pipeline on the larger pseudo full-scene TIFF.
 - Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
+- Main graph supervision uses edge-decay GT spreading (`y_edge_decay`) so one ship-center pixel influences nearby nodes through the graph radius. Raw point GT (`y`) is still retained for comparison and diagnostics.
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 - Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
 - Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)` so ship-count targets are treated as non-negative intensity values rather than only squared-error residuals.
+- Runtime is expected to use Apple MPS. The notebook raises immediately if MPS is not available so troubleshooting stays on GPU.
 """
     ),
     code_cell(
@@ -108,7 +110,10 @@ SCENES = {
             min_nodes=16,
             max_nodes=2500,
         ),
-        "graph": GraphConfig(radius_pixels=4.0),
+        "graph": GraphConfig(
+            radius_pixels=4.0,
+            gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+        ),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -120,6 +125,7 @@ SCENES = {
             loss_name="poisson_nll",
             positive_weight=12.0,
             count_weight_alpha=20.0,
+            target_field="y_edge_decay",
         ),
     },
     "kr_full_scene": {
@@ -134,7 +140,10 @@ SCENES = {
             min_nodes=32,
             max_nodes=2500,
         ),
-        "graph": GraphConfig(radius_pixels=4.0),
+        "graph": GraphConfig(
+            radius_pixels=4.0,
+            gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+        ),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -146,6 +155,7 @@ SCENES = {
             loss_name="poisson_nll",
             positive_weight=12.0,
             count_weight_alpha=20.0,
+            target_field="y_edge_decay",
         ),
     },
 }
@@ -153,6 +163,8 @@ SCENES = {
 SCENE_MODE = "batch_demo"
 ACTIVE = SCENES[SCENE_MODE]
 DEVICE = resolve_device("mps")
+if DEVICE.type != "mps":
+    raise RuntimeError("MPS device is required for this notebook run.")
 
 print(f"SCENE_MODE={SCENE_MODE}")
 print(f"DEVICE={DEVICE}")
@@ -165,7 +177,7 @@ print(f"Scene path={ACTIVE['scene_tif']}")
     markdown_cell(
         """## Block 2. Scene Loading and GT Density Map Preparation
 
-Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center counts onto the scene grid. The count map is the node-level regression target before DRUID patching.
+Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center counts onto the scene grid. This raw count map is the source GT before graph-level edge-decay spreading creates `y_edge_decay`.
 """
     ),
     code_cell(
@@ -508,7 +520,7 @@ else:
     markdown_cell(
         """## Block 10. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
-Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the default supervision target is graph-propagated `y_edge_decay`. Raw point GT is still stored as `y` for comparison. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
 """
     ),
     code_cell(

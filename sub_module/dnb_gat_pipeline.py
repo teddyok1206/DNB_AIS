@@ -253,7 +253,7 @@ class GraphConfig:
     radius_pixels: float = 2.0
     normalize_coordinates: bool = True
     make_undirected: bool = True
-    gt_smoothing_hop_weights: tuple[float, ...] | None = None
+    gt_smoothing_hop_weights: tuple[float, ...] | None = (1.0, 0.6, 0.2)
 
 
 @dataclass
@@ -272,7 +272,7 @@ class TrainingConfig:
     count_weight_alpha: float = 0.0
     count_sum_lambda: float = 0.0
     target_scale: float = 1.0
-    target_field: str = "y"
+    target_field: str = "y_edge_decay"
 
 
 @dataclass
