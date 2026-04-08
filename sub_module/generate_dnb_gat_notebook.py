@@ -54,6 +54,7 @@ NOTEBOOK_CELLS = [
     ),
     code_cell(
         """from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
