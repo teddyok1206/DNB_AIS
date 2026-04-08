@@ -34,11 +34,12 @@ NOTEBOOK_CELLS = [
 - Block 4. DRUID-based irregular contour patch extraction
 - Block 5. Graph receptive-field sweep over radius and layer count
 - Block 6. Representative graph visualization for one DRUID cluster
-- Block 7. Loss weighting comparison for count-sensitive supervision
-- Block 8. Weighting-grid sweep under the current loss model
-- Block 9. Patch-to-graph conversion with PyG `radius_graph`
-- Block 10. GATv2Conv density regression and minimal training loop
-- Block 11. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+- Block 7. Single-graph overfit troubleshooting for peak recovery
+- Block 8. Loss weighting comparison for count-sensitive supervision
+- Block 9. Weighting-grid sweep under the current loss model
+- Block 10. Patch-to-graph conversion with PyG `radius_graph`
+- Block 11. GATv2Conv density regression and minimal training loop
+- Block 12. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
 
 ## Notes
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
@@ -50,7 +51,8 @@ NOTEBOOK_CELLS = [
 """
     ),
     code_cell(
-        """from pathlib import Path
+        """from dataclasses import replace
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -69,6 +71,7 @@ from sub_module.dnb_gat_pipeline import (
     SceneRaster,
     TrainingConfig,
     area_limit_sweep,
+    choose_overfit_cluster,
     choose_representative_cluster,
     count_model_parameters,
     graph_receptive_field_sweep,
@@ -76,9 +79,9 @@ from sub_module.dnb_gat_pipeline import (
     loss_weighting_sweep,
     make_overlay_rgb,
     predict_graphs,
-    positive_weight_sweep,
     resolve_device,
     save_model_checkpoint,
+    single_graph_overfit_sweep,
     train_gat,
     visualize_graph_cluster,
     weighting_grid_sweep,
@@ -321,7 +324,172 @@ print(f"graph_viz_path={graph_viz_path}")
 """
     ),
     markdown_cell(
-        """## Block 7. Loss Weighting Comparison
+        """## Block 7. Single-Graph Overfit Troubleshooting
+
+This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch.
+"""
+    ),
+    code_cell(
+        """troubleshooting_graph_config = GraphConfig(
+    radius_pixels=ACTIVE["graph"].radius_pixels,
+    normalize_coordinates=ACTIVE["graph"].normalize_coordinates,
+    make_undirected=True,
+    gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+)
+troubleshooting_graphs = GraphBuilder(troubleshooting_graph_config).build(cluster_store.clusters)
+troubleshooting_graph_map = {
+    int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0]): graph
+    for graph in troubleshooting_graphs
+}
+overfit_cluster = choose_overfit_cluster(cluster_store.clusters)
+troubleshooting_graph = troubleshooting_graph_map[overfit_cluster.cluster_id]
+
+raw_target_patch = np.zeros_like(overfit_cluster.patch_image, dtype=np.float32)
+smooth_target_patch = np.zeros_like(overfit_cluster.patch_image, dtype=np.float32)
+raw_target_patch[overfit_cluster.local_rc[:, 0], overfit_cluster.local_rc[:, 1]] = (
+    troubleshooting_graph.y_point.detach().cpu().numpy()
+)
+smooth_target_patch[overfit_cluster.local_rc[:, 0], overfit_cluster.local_rc[:, 1]] = (
+    troubleshooting_graph.y_edge_decay.detach().cpu().numpy()
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+axes[0].imshow(raw_target_patch, cmap="inferno")
+axes[0].set_title("Raw point GT on representative graph")
+axes[0].set_axis_off()
+
+axes[1].imshow(smooth_target_patch, cmap="inferno")
+axes[1].set_title("Edge-decay smoothed GT")
+axes[1].set_axis_off()
+plt.tight_layout()
+plt.show()
+print(f"overfit_cluster_id={overfit_cluster.cluster_id}, gt_sum={overfit_cluster.gt_sum:.1f}")
+
+overfit_configs = [
+    (
+        "point_poisson_unweighted",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="poisson_nll",
+            positive_weight=0.0,
+            count_weight_alpha=0.0,
+            target_field="y",
+        ),
+    ),
+    (
+        "point_mse_unweighted",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="mse",
+            positive_weight=0.0,
+            count_weight_alpha=0.0,
+            target_field="y",
+        ),
+    ),
+    (
+        "smooth_mse_unweighted",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="mse",
+            positive_weight=0.0,
+            count_weight_alpha=0.0,
+            target_field="y_edge_decay",
+        ),
+    ),
+    (
+        "smooth_mse_pw20",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="mse",
+            positive_weight=20.0,
+            count_weight_alpha=0.0,
+            target_field="y_edge_decay",
+        ),
+    ),
+    (
+        "smooth_mse_pw50",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="mse",
+            positive_weight=50.0,
+            count_weight_alpha=0.0,
+            target_field="y_edge_decay",
+        ),
+    ),
+    (
+        "smooth_mse_pw100",
+        replace(
+            ACTIVE["training"],
+            epochs=1000,
+            batch_size=1,
+            dropout=0.0,
+            weight_decay=0.0,
+            lr=3.0e-3,
+            loss_name="mse",
+            positive_weight=100.0,
+            count_weight_alpha=0.0,
+            target_field="y_edge_decay",
+        ),
+    ),
+]
+
+overfit_table, overfit_predictions, overfit_histories = single_graph_overfit_sweep(
+    troubleshooting_graph,
+    overfit_configs,
+    DEVICE,
+    seed=SEED,
+)
+overfit_table.to_csv(scene_output_dir / "single_graph_overfit_sweep.csv", index=False)
+overfit_history = pd.concat(
+    [history.assign(experiment=name) for name, history in overfit_histories.items()],
+    ignore_index=True,
+)
+overfit_history.to_csv(scene_output_dir / "single_graph_overfit_history.csv", index=False)
+display(overfit_table)
+
+best_overfit_name = overfit_table.iloc[0]["experiment"]
+best_overfit_pred = overfit_predictions[best_overfit_name]
+best_overfit_fig = visualize_graph_cluster(
+    overfit_cluster,
+    troubleshooting_graph,
+    pred_values=best_overfit_pred,
+)
+best_overfit_path = scene_output_dir / f"{scene.key}_{best_overfit_name}_overfit.png"
+best_overfit_fig.savefig(best_overfit_path, dpi=180, bbox_inches="tight")
+plt.show()
+
+print(f"best_overfit_name={best_overfit_name}")
+print(f"best_overfit_pred_max={overfit_table.iloc[0]['pred_max']:.6f}")
+print(f"best_overfit_path={best_overfit_path}")
+"""
+    ),
+    markdown_cell(
+        """## Block 8. Loss Weighting Comparison
 
 Compare several supervision variants on the same graph set. With the current default, the model uses a `Softplus` head and `PoissonNLLLoss`; the sweep keeps the count-aware weighting variants and a reference-only target scaling run so the previous MSE-family behavior can still be contrasted.
 """
@@ -345,9 +513,9 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 8. Weighting-Grid Sweep Under the Current Loss Model
+        """## Block 9. Weighting-Grid Sweep Under the Current Loss Model
 
-Run a small grid over `positive_weight` and `count_weight_alpha` so the current inverse-brightness setting can be checked from fully unweighted training through several positive-emphasis variants.
+Run a small grid over `positive_weight` and `count_weight_alpha` so the current compressed-brightness setting can be checked from fully unweighted training through several positive-emphasis variants.
 """
     ),
     code_cell(
@@ -371,7 +539,7 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 9. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
+        """## Block 10. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
 Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
 """
@@ -419,7 +587,7 @@ print(f"output_activation={ACTIVE['training'].output_activation}")
 """
     ),
     markdown_cell(
-        """## Block 10. Cluster Inference and Representative Prediction View
+        """## Block 11. Cluster Inference and Representative Prediction View
 
 Predict each cluster graph, then revisit the representative cluster to compare node-level predictions against the graph structure before the full-scene merge.
 """
@@ -439,7 +607,7 @@ print(f"pred_viz_path={pred_viz_path}")
 """
     ),
     markdown_cell(
-        """## Block 11. Lifetime-Weighted Scene Merge and GeoTIFF Export
+        """## Block 12. Lifetime-Weighted Scene Merge and GeoTIFF Export
 
 Map each cluster prediction back to the original pixel grid, combine overlaps by lifetime-weighted averaging, and save the merged result as a geocoded density heatmap GeoTIFF.
 """

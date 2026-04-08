@@ -8,6 +8,7 @@ import shutil
 import sqlite3
 import sys
 import warnings
+from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -32,6 +33,7 @@ from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATv2Conv
 from torch_geometric.nn.pool import radius_graph
+from torch_geometric.utils import to_undirected
 
 
 SCENE_KEY_PATTERN = re.compile(r"(A\d{7}_\d{4}_\d{3})")
@@ -250,6 +252,8 @@ class DruidConfig:
 class GraphConfig:
     radius_pixels: float = 2.0
     normalize_coordinates: bool = True
+    make_undirected: bool = True
+    gt_smoothing_hop_weights: tuple[float, ...] | None = None
 
 
 @dataclass
@@ -268,6 +272,7 @@ class TrainingConfig:
     count_weight_alpha: float = 0.0
     count_sum_lambda: float = 0.0
     target_scale: float = 1.0
+    target_field: str = "y"
 
 
 @dataclass
@@ -1205,6 +1210,20 @@ def choose_representative_cluster(clusters: Iterable[DruidCluster]) -> DruidClus
     return max(cluster_list, key=lambda cluster: (cluster.gt_sum, cluster.lifetime, cluster.node_count))
 
 
+def choose_overfit_cluster(clusters: Iterable[DruidCluster]) -> DruidCluster:
+    cluster_list = [cluster for cluster in clusters if cluster.gt_sum > 0]
+    if not cluster_list:
+        raise ValueError("No positive-GT clusters supplied for overfit troubleshooting.")
+
+    single_ship_candidates = [cluster for cluster in cluster_list if cluster.gt_sum <= 1.0 + 1.0e-6]
+    if single_ship_candidates:
+        return max(single_ship_candidates, key=lambda cluster: (cluster.lifetime, cluster.node_count))
+
+    min_gt_sum = min(cluster.gt_sum for cluster in cluster_list)
+    min_sum_candidates = [cluster for cluster in cluster_list if abs(cluster.gt_sum - min_gt_sum) < 1.0e-6]
+    return max(min_sum_candidates, key=lambda cluster: (cluster.lifetime, cluster.node_count))
+
+
 def visualize_graph_cluster(
     cluster: DruidCluster,
     graph: Data,
@@ -1291,6 +1310,49 @@ def visualize_graph_cluster(
     return fig
 
 
+def edge_decay_smoothed_target(
+    raw_target: np.ndarray,
+    edge_index: torch.Tensor,
+    num_nodes: int,
+    hop_weights: tuple[float, ...],
+) -> torch.Tensor:
+    if len(hop_weights) == 0:
+        raise ValueError("hop_weights must contain at least one value.")
+
+    smoothed = np.zeros(int(num_nodes), dtype=np.float32)
+    positive_nodes = np.flatnonzero(raw_target > 0)
+    if positive_nodes.size == 0:
+        return torch.from_numpy(smoothed)
+
+    adjacency: list[set[int]] = [set() for _ in range(int(num_nodes))]
+    edges_np = edge_index.detach().cpu().numpy()
+    for src, dst in edges_np.T:
+        adjacency[int(src)].add(int(dst))
+
+    max_hop = len(hop_weights) - 1
+    for source in positive_nodes.tolist():
+        base_value = float(raw_target[source])
+        distances: dict[int, int] = {int(source): 0}
+        queue: deque[int] = deque([int(source)])
+
+        while queue:
+            node = queue.popleft()
+            current_hop = distances[node]
+            if current_hop >= max_hop:
+                continue
+            for neighbor in adjacency[node]:
+                if neighbor in distances:
+                    continue
+                next_hop = current_hop + 1
+                distances[neighbor] = next_hop
+                queue.append(neighbor)
+
+        for node, hop in distances.items():
+            smoothed[node] += np.float32(base_value * float(hop_weights[hop]))
+
+    return torch.from_numpy(smoothed)
+
+
 class GraphBuilder:
     def __init__(self, config: GraphConfig) -> None:
         self.config = config
@@ -1312,13 +1374,25 @@ class GraphBuilder:
         features = np.column_stack([brightness, x_coords, y_coords]).astype(np.float32)
         pos_tensor = torch.from_numpy(pos)
         edge_index = radius_graph(pos_tensor, r=self.config.radius_pixels, loop=False)
+        if self.config.make_undirected:
+            edge_index = to_undirected(edge_index, num_nodes=int(pos_tensor.shape[0]))
+
+        y_tensor = torch.from_numpy(gt_values)
 
         data = Data(
             x=torch.from_numpy(features),
             edge_index=edge_index,
-            y=torch.from_numpy(gt_values),
+            y=y_tensor,
             pos=pos_tensor,
         )
+        data.y_point = y_tensor.clone()
+        if self.config.gt_smoothing_hop_weights is not None:
+            data.y_edge_decay = edge_decay_smoothed_target(
+                raw_target=gt_values,
+                edge_index=edge_index,
+                num_nodes=int(pos_tensor.shape[0]),
+                hop_weights=self.config.gt_smoothing_hop_weights,
+            )
         data.cluster_id = torch.tensor([cluster.cluster_id], dtype=torch.long)
         data.global_rc = torch.from_numpy(cluster.global_rc.astype(np.int64))
         data.cluster_weight = torch.tensor([cluster.weight], dtype=torch.float32)
@@ -1482,6 +1556,7 @@ def train_gat(
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     history = []
     loss_name = str(config.loss_name).lower()
+    target_field = str(config.target_field)
 
     model.to(device)
     for epoch in range(1, config.epochs + 1):
@@ -1492,12 +1567,15 @@ def train_gat(
             batch = batch.to(device)
             optimizer.zero_grad(set_to_none=True)
             pred = model(batch)
-            target = batch.y * float(config.target_scale)
-            weights = torch.ones_like(batch.y)
+            if not hasattr(batch, target_field):
+                raise ValueError(f"Batch does not contain target field: {target_field}")
+            target_tensor = getattr(batch, target_field)
+            target = target_tensor * float(config.target_scale)
+            weights = torch.ones_like(target)
             if config.positive_weight != 0.0:
-                weights = weights + (batch.y > 0).float() * config.positive_weight
+                weights = weights + (target > 0).float() * config.positive_weight
             if config.count_weight_alpha != 0.0:
-                weights = weights + batch.y * float(config.count_weight_alpha)
+                weights = weights + target * float(config.count_weight_alpha)
 
             if loss_name == "mse":
                 element_loss = (pred - target) ** 2
@@ -1536,6 +1614,7 @@ def train_gat(
                 "train_loss": epoch_loss / max(epoch_nodes, 1),
                 "num_graphs": len(graphs),
                 "num_nodes": epoch_nodes,
+                "target_field": target_field,
             }
         )
 
@@ -1553,6 +1632,72 @@ def predict_graphs(model: nn.Module, graphs: list[Data], device: torch.device) -
             cluster_id = int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0])
             predictions[cluster_id] = pred
     return predictions
+
+
+def single_graph_overfit_sweep(
+    graph: Data,
+    configs: Iterable[tuple[str, TrainingConfig]],
+    device: torch.device,
+    *,
+    seed: int = 1,
+) -> tuple[pd.DataFrame, dict[str, np.ndarray], dict[str, pd.DataFrame]]:
+    rows: list[dict[str, Any]] = []
+    predictions: dict[str, np.ndarray] = {}
+    histories: dict[str, pd.DataFrame] = {}
+
+    raw_target = graph.y_point.detach().cpu().numpy() if hasattr(graph, "y_point") else graph.y.detach().cpu().numpy()
+    raw_positive_mask = raw_target > 0
+
+    for name, training_config in configs:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+        model = GATDensityRegressor(
+            in_channels=int(graph.x.shape[1]),
+            hidden_channels=training_config.hidden_channels,
+            heads=training_config.heads,
+            num_layers=training_config.num_layers,
+            dropout=training_config.dropout,
+            output_activation=training_config.output_activation,
+        )
+        history = train_gat(model, [graph.clone()], device, training_config)
+        model.eval()
+        with torch.no_grad():
+            pred = model(graph.clone().to(device)).detach().cpu().numpy().astype(np.float32)
+
+        target_tensor = getattr(graph, training_config.target_field)
+        selected_target = target_tensor.detach().cpu().numpy()
+        selected_positive_mask = selected_target > 0
+
+        rows.append(
+            {
+                "experiment": name,
+                "target_field": training_config.target_field,
+                "loss_name": training_config.loss_name,
+                "positive_weight": float(training_config.positive_weight),
+                "count_weight_alpha": float(training_config.count_weight_alpha),
+                "epochs": int(training_config.epochs),
+                "lr": float(training_config.lr),
+                "weight_decay": float(training_config.weight_decay),
+                "dropout": float(training_config.dropout),
+                "raw_positive_count": int(raw_positive_mask.sum()),
+                "selected_positive_count": int(selected_positive_mask.sum()),
+                "selected_target_max": float(selected_target.max()) if selected_target.size else 0.0,
+                "pred_max": float(pred.max()) if pred.size else 0.0,
+                "pred_sum": float(pred.sum()),
+                "pred_on_raw_positive_mean": float(pred[raw_positive_mask].mean()) if raw_positive_mask.any() else 0.0,
+                "pred_on_raw_positive_max": float(pred[raw_positive_mask].max()) if raw_positive_mask.any() else 0.0,
+                "pred_on_selected_positive_mean": float(pred[selected_positive_mask].mean()) if selected_positive_mask.any() else 0.0,
+                "pred_on_selected_positive_max": float(pred[selected_positive_mask].max()) if selected_positive_mask.any() else 0.0,
+                "final_train_loss": float(history["train_loss"].iloc[-1]),
+                "reached_peak_0_9": bool(float(pred.max()) >= 0.9) if pred.size else False,
+            }
+        )
+        predictions[name] = pred
+        histories[name] = history
+
+    result = pd.DataFrame(rows).sort_values(["pred_max", "pred_on_raw_positive_max"], ascending=False).reset_index(drop=True)
+    return result, predictions, histories
 
 
 class SceneAssembler:

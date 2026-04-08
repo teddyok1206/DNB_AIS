@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 12
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:11 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 선박 후보를 찾은 뒤 irregular contour patch를 만든다. 기본 파이프라인은 raw point GT와 compressed brightness를 유지한다. 추가로 troubleshooting 경로에서는 graph를 undirected로 고정하고, edge-decay smoothed GT(`y_edge_decay`)를 별도 생성해 weighted MSE overfit 진단을 수행할 수 있다. notebook에는 single-ship positive cluster를 골라 peak recovery를 확인하는 블록이 추가됐다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- GT smoothing을 메인 정답으로 덮지 않고 별도 troubleshooting target으로 추가했다. single-graph overfit block을 넣고 `gt_sum=1` cluster에서 smoothed GT + weighted MSE가 `pred_max≈0.997`까지 올라가는 것을 확인했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이번 결과는 single-graph overfit 진단이라 patch set 일반화는 아직 검증되지 않았다. 현재 개선은 peak recovery 관점의 확정 방향이지, full pipeline 최종 loss 결정이 끝났다는 뜻은 아니다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- smoothed GT 경로를 소규모 patch set 학습에 확장해 ranking 개선 여부 확인
+
 ## Entry 11
 
 1. 업데이트 날짜, 시각
