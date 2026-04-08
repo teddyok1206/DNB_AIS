@@ -119,7 +119,7 @@ SCENES = {
             output_activation="softplus",
             loss_name="poisson_nll",
             positive_weight=12.0,
-            count_weight_alpha=6.0,
+            count_weight_alpha=20.0,
         ),
     },
     "kr_full_scene": {
@@ -145,7 +145,7 @@ SCENES = {
             output_activation="softplus",
             loss_name="poisson_nll",
             positive_weight=12.0,
-            count_weight_alpha=6.0,
+            count_weight_alpha=20.0,
         ),
     },
 }
@@ -495,7 +495,7 @@ Run a small grid over `positive_weight` and `count_weight_alpha` so the current 
         base_training_config=ACTIVE["training"],
         device=DEVICE,
         positive_weights=[0.0, 10.0, 20.0, 30.0],
-        count_weight_alphas=[0.0, 6.0],
+        count_weight_alphas=[0.0, 20.0],
         seed=SEED,
     )
     positive_weight_table.to_csv(scene_output_dir / "weighting_grid_sweep.csv", index=False)

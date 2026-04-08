@@ -875,21 +875,21 @@ def loss_weighting_sweep(
             ),
         ),
         (
-            "count_weight_yx6",
+            "count_weight_yx20",
             replace(
                 base_training_config,
                 positive_weight=12.0,
-                count_weight_alpha=6.0,
+                count_weight_alpha=20.0,
                 count_sum_lambda=0.0,
                 target_scale=1.0,
             ),
         ),
         (
-            "count_weight_yx6_sum0.01",
+            "count_weight_yx20_sum0.01",
             replace(
                 base_training_config,
                 positive_weight=12.0,
-                count_weight_alpha=6.0,
+                count_weight_alpha=20.0,
                 count_sum_lambda=0.01,
                 target_scale=1.0,
             ),

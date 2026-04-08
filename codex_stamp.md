@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 14
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:35 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 기본 파이프라인은 raw point GT와 compressed brightness를 유지한다. 현재 notebook 기본 training 설정의 `count_weight_alpha`는 20으로 올라갔고, troubleshooting 경로에서는 single-graph overfit으로 `positive_weight x count_weight_alpha`를 비교할 수 있다. weighting-grid와 loss comparison 블록도 같은 기준값을 보도록 정리했다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- 메인 notebook 기본 `count_weight_alpha`를 6에서 20으로 올렸다. weighting-grid 비교와 loss-weighting helper도 20 기준으로 맞췄다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이번 턴에서는 설정만 바꾸고 full notebook 재실행은 하지 않았다. `cwa=20` 기본값이 patch set 기준으로도 가장 균형적인지는 후속 검증이 필요하다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- cwa=20 기본값으로 소규모 patch set 재검증
+
 ## Entry 13
 
 1. 업데이트 날짜, 시각
