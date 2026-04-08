@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shutil
 import sqlite3
 import sys
 import warnings
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
@@ -20,6 +22,7 @@ import torch
 import torch.nn.functional as F
 from astropy.io import fits
 from matplotlib import cm
+from matplotlib.collections import LineCollection
 from matplotlib.colors import Normalize
 from rasterio.transform import rowcol
 from scipy.ndimage import label
@@ -55,6 +58,50 @@ def ensure_druid_on_path(druid_root: str | Path) -> None:
     druid_root = str(Path(druid_root).resolve())
     if druid_root not in sys.path:
         sys.path.insert(0, druid_root)
+
+
+def load_druid_sf(druid_root: str | Path):
+    druid_root = Path(druid_root).resolve()
+    source_dir = druid_root / "DRUID"
+    main_path = source_dir / "main.py"
+    src_dir = source_dir / "src"
+    if not main_path.exists():
+        raise FileNotFoundError(f"DRUID main.py not found: {main_path}")
+    if not src_dir.exists():
+        raise FileNotFoundError(f"DRUID src directory not found: {src_dir}")
+
+    runtime_root = Path("/tmp/codex_druid_runtime")
+    runtime_pkg = runtime_root / "codex_druid_runtime"
+    runtime_src = runtime_pkg / "src"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    runtime_pkg.mkdir(parents=True, exist_ok=True)
+
+    shutil.copy2(main_path, runtime_pkg / "main.py")
+    shutil.copytree(
+        src_dir,
+        runtime_src,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".DS_Store"),
+    )
+    (runtime_pkg / "__init__.py").write_text("from .main import sf\n", encoding="utf-8")
+    (runtime_src / "__init__.py").write_text("", encoding="utf-8")
+
+    if str(runtime_root) not in sys.path:
+        sys.path.insert(0, str(runtime_root))
+
+    package_name = "codex_druid_runtime"
+    stale_modules = [name for name in sys.modules if name == package_name or name.startswith(f"{package_name}.")]
+    for module_name in stale_modules:
+        del sys.modules[module_name]
+
+    from codex_druid_runtime import sf
+
+    return sf
+
+
+def druid_debug(message: str) -> None:
+    if os.environ.get("CODEX_DRUID_DEBUG", "0") == "1":
+        print(f"[DRUID_DEBUG] {message}", flush=True)
 
 
 def build_fits_header(scene: "SceneRaster") -> fits.Header:
@@ -216,6 +263,9 @@ class TrainingConfig:
     epochs: int = 4
     batch_size: int = 4
     positive_weight: float = 8.0
+    count_weight_alpha: float = 0.0
+    count_sum_lambda: float = 0.0
+    target_scale: float = 1.0
 
 
 @dataclass
@@ -400,9 +450,15 @@ class DruidClusterStore:
         druid_root: str | Path,
         config: DruidConfig,
     ) -> "DruidClusterStore":
+        druid_debug("running DRUID catalogue")
         catalogue = cls._run_druid(scene, druid_root, config)
+        druid_debug(f"catalogue rows={len(catalogue)}")
+        druid_debug("building clusters")
         clusters = cls._build_clusters(scene, gt_count_map, catalogue, config)
+        druid_debug(f"clusters built={len(clusters)}")
+        druid_debug("dropping nested clusters")
         clusters = _drop_nested_clusters(clusters)
+        druid_debug(f"clusters after nested drop={len(clusters)}")
         filtered_ids = {cluster.cluster_id for cluster in clusters}
         catalogue = catalogue[catalogue["ID"].isin(filtered_ids)].copy().reset_index(drop=True)
         return cls(scene=scene, catalogue=catalogue, clusters=clusters)
@@ -410,9 +466,12 @@ class DruidClusterStore:
     @staticmethod
     def _run_druid(scene: SceneRaster, druid_root: str | Path, config: DruidConfig) -> pd.DataFrame:
         ensure_druid_on_path(druid_root)
-        from DRUID import sf
+        druid_debug("loading sf")
+        sf = load_druid_sf(druid_root)
+        druid_debug("sf loaded")
 
         warnings.filterwarnings("ignore")
+        druid_debug("initializing finder")
         finder = sf(
             image=scene.image,
             header=build_fits_header(scene),
@@ -426,12 +485,17 @@ class DruidClusterStore:
             area_limit=config.area_limit,
             remove_edge=config.remove_edge,
         )
+        druid_debug("finder initialized")
+        druid_debug("setting background")
         finder.set_background(
             detection_threshold=config.detection_threshold,
             analysis_threshold=config.analysis_threshold,
             mode=config.background_mode,
         )
+        druid_debug("background set")
+        druid_debug("running phsf")
         finder.phsf(lifetime_limit=0, lifetime_limit_fraction=config.lifetime_limit_fraction)
+        druid_debug("phsf complete")
 
         base_catalogue = finder.catalogue.copy()
         if "lifetime" not in base_catalogue.columns:
@@ -441,10 +505,12 @@ class DruidClusterStore:
         if config.max_catalogue_clusters is not None:
             base_catalogue = base_catalogue.head(config.max_catalogue_clusters).copy()
 
+        druid_debug("attaching contours")
         contour_catalogue = DruidClusterStore._attach_contours(
             np.asarray(finder.image_smooth, dtype=np.float32),
             base_catalogue,
         )
+        druid_debug("contours attached")
         return contour_catalogue.sort_values("lifetime", ascending=False).reset_index(drop=True)
 
     @staticmethod
@@ -502,7 +568,10 @@ class DruidClusterStore:
         config: DruidConfig,
     ) -> list[DruidCluster]:
         clusters: list[DruidCluster] = []
-        for row in catalogue.itertuples(index=False):
+        total_rows = len(catalogue)
+        for idx, row in enumerate(catalogue.itertuples(index=False), start=1):
+            if idx == 1 or idx % 50 == 0 or idx == total_rows:
+                druid_debug(f"cluster build progress {idx}/{total_rows}")
             contour = np.asarray(row.contour, dtype=np.int32)
             if contour.ndim != 2 or contour.shape[0] < 3:
                 continue
@@ -764,6 +833,244 @@ def graph_receptive_field_sweep(
     )
 
 
+def loss_weighting_sweep(
+    scene: SceneRaster,
+    gt_count_map: np.ndarray,
+    clusters: Iterable[DruidCluster],
+    graph_config: GraphConfig,
+    base_training_config: TrainingConfig,
+    device: torch.device,
+    *,
+    seed: int = 1,
+) -> pd.DataFrame:
+    cluster_list = list(clusters)
+    if not cluster_list:
+        raise ValueError("No clusters supplied for loss weighting sweep.")
+
+    graphs = GraphBuilder(graph_config).build(cluster_list)
+    all_y = torch.cat([graph.y for graph in graphs]).cpu().numpy()
+    positive_mask = all_y > 0
+    positive_count = int(positive_mask.sum())
+    gt_scene_positive = int((gt_count_map > 0).sum())
+    scene_positive_mask = gt_count_map > 0
+
+    variants = [
+        (
+            "baseline_pos12",
+            replace(
+                base_training_config,
+                positive_weight=12.0,
+                count_weight_alpha=0.0,
+                count_sum_lambda=0.0,
+                target_scale=1.0,
+            ),
+        ),
+        (
+            "count_weight_yx6",
+            replace(
+                base_training_config,
+                positive_weight=12.0,
+                count_weight_alpha=6.0,
+                count_sum_lambda=0.0,
+                target_scale=1.0,
+            ),
+        ),
+        (
+            "count_weight_yx6_sum0.01",
+            replace(
+                base_training_config,
+                positive_weight=12.0,
+                count_weight_alpha=6.0,
+                count_sum_lambda=0.01,
+                target_scale=1.0,
+            ),
+        ),
+        (
+            "target_scale_x6_ref",
+            replace(
+                base_training_config,
+                positive_weight=12.0,
+                count_weight_alpha=0.0,
+                count_sum_lambda=0.0,
+                target_scale=6.0,
+            ),
+        ),
+    ]
+
+    rows: list[dict[str, Any]] = []
+    for variant_name, training_config in variants:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+        model = GATDensityRegressor(
+            in_channels=3,
+            hidden_channels=training_config.hidden_channels,
+            heads=training_config.heads,
+            num_layers=training_config.num_layers,
+            dropout=training_config.dropout,
+        )
+        history = train_gat(model, graphs, device, training_config)
+        predictions = predict_graphs(model, graphs, device)
+        all_pred = np.concatenate(
+            [
+                predictions[int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0])]
+                for graph in graphs
+            ]
+        )
+
+        gt_node_pred_mean = float(all_pred[positive_mask].mean()) if positive_count else 0.0
+        bg_node_pred_mean = float(all_pred[~positive_mask].mean()) if (~positive_mask).any() else 0.0
+        gt_bg_ratio = float(gt_node_pred_mean / max(bg_node_pred_mean, 1.0e-6))
+
+        graph_topk_hits = 0
+        if positive_count > 0:
+            top_idx = np.argpartition(all_pred, -positive_count)[-positive_count:]
+            graph_topk_hits = int((all_y[top_idx] > 0).sum())
+
+        assembler = SceneAssembler(scene)
+        for cluster in cluster_list:
+            assembler.accumulate(cluster, predictions[cluster.cluster_id])
+        heatmap = assembler.finalize()
+
+        scene_topk_hits = 0
+        if gt_scene_positive > 0 and np.any(heatmap > 0):
+            flat_heatmap = heatmap.reshape(-1)
+            top_scene_idx = np.argpartition(flat_heatmap, -gt_scene_positive)[-gt_scene_positive:]
+            scene_topk_hits = int(scene_positive_mask.reshape(-1)[top_scene_idx].sum())
+
+        heatmap_gt_mean = float(heatmap[scene_positive_mask].mean()) if gt_scene_positive else 0.0
+        heatmap_bg_mean = float(heatmap[~scene_positive_mask].mean()) if (~scene_positive_mask).any() else 0.0
+
+        rows.append(
+            {
+                "variant": variant_name,
+                "positive_weight": float(training_config.positive_weight),
+                "count_weight_alpha": float(training_config.count_weight_alpha),
+                "count_sum_lambda": float(training_config.count_sum_lambda),
+                "target_scale": float(training_config.target_scale),
+                "graph_count": int(len(graphs)),
+                "total_nodes": int(sum(int(graph.num_nodes) for graph in graphs)),
+                "positive_graph_nodes": positive_count,
+                "final_train_mse": float(history["train_mse"].iloc[-1]),
+                "graph_topk_hits": graph_topk_hits,
+                "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
+                "scene_topk_hits": scene_topk_hits,
+                "scene_topk_hit_rate": float(scene_topk_hits / max(gt_scene_positive, 1)),
+                "gt_node_pred_mean": gt_node_pred_mean,
+                "bg_node_pred_mean": bg_node_pred_mean,
+                "gt_bg_ratio": gt_bg_ratio,
+                "pred_sum_graph_nodes": float(all_pred.sum()),
+                "gt_sum_graph_nodes": float(all_y.sum()),
+                "pred_sum_ratio": float(all_pred.sum() / max(float(all_y.sum()), 1.0e-6)),
+                "heatmap_nonzero_pixels": int((heatmap > 0).sum()),
+                "heatmap_max": float(heatmap.max()),
+                "heatmap_mean": float(heatmap.mean()),
+                "heatmap_sum": float(heatmap.sum()),
+                "heatmap_gt_mean": heatmap_gt_mean,
+                "heatmap_bg_mean": heatmap_bg_mean,
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["scene_topk_hit_rate", "graph_topk_hit_rate", "gt_bg_ratio"], ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def choose_representative_cluster(clusters: Iterable[DruidCluster]) -> DruidCluster:
+    cluster_list = list(clusters)
+    if not cluster_list:
+        raise ValueError("No clusters supplied for graph visualization.")
+    return max(cluster_list, key=lambda cluster: (cluster.gt_sum, cluster.lifetime, cluster.node_count))
+
+
+def visualize_graph_cluster(
+    cluster: DruidCluster,
+    graph: Data,
+    *,
+    pred_values: np.ndarray | None = None,
+    max_edges_to_draw: int = 6000,
+) -> plt.Figure:
+    pos = graph.pos.detach().cpu().numpy()
+    edge_index = graph.edge_index.detach().cpu().numpy()
+    brightness = graph.x[:, 0].detach().cpu().numpy()
+    gt_values = graph.y.detach().cpu().numpy()
+
+    segments = np.stack([pos[edge_index[0]], pos[edge_index[1]]], axis=1) if edge_index.size else np.empty((0, 2, 2))
+    if segments.shape[0] > max_edges_to_draw:
+        stride = max(int(math.ceil(segments.shape[0] / max_edges_to_draw)), 1)
+        segments = segments[::stride]
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+
+    axes[0].imshow(cluster.patch_image, cmap="cividis")
+    axes[0].contour(cluster.mask.astype(float), levels=[0.5], colors="cyan", linewidths=1.0)
+    positive_local = cluster.local_rc[gt_values > 0]
+    if positive_local.size:
+        axes[0].scatter(
+            positive_local[:, 1],
+            positive_local[:, 0],
+            c=gt_values[gt_values > 0],
+            cmap="inferno",
+            s=48,
+            edgecolors="white",
+            linewidths=0.5,
+        )
+    axes[0].set_title(
+        f"Cluster {cluster.cluster_id} patch\nGT sum={cluster.gt_sum:.1f}, nodes={cluster.node_count}"
+    )
+    axes[0].set_axis_off()
+
+    axes[1].imshow(cluster.mask.astype(float), cmap="bone")
+    if segments.size:
+        axes[1].add_collection(LineCollection(segments, colors=(0.15, 0.45, 0.95, 0.12), linewidths=0.35))
+    axes[1].scatter(pos[:, 0], pos[:, 1], c=brightness, cmap="viridis", s=14)
+    axes[1].set_title("Graph nodes and edges")
+    axes[1].set_xlim(-0.5, cluster.bbox_width - 0.5)
+    axes[1].set_ylim(cluster.bbox_height - 0.5, -0.5)
+    axes[1].set_aspect("equal")
+
+    gt_scatter = axes[2].scatter(
+        pos[:, 0],
+        pos[:, 1],
+        c=gt_values,
+        cmap="inferno",
+        s=16,
+        vmin=0.0,
+        vmax=max(float(gt_values.max()), 1.0),
+    )
+    axes[2].set_title("Node GT ship counts")
+    axes[2].set_xlim(-0.5, cluster.bbox_width - 0.5)
+    axes[2].set_ylim(cluster.bbox_height - 0.5, -0.5)
+    axes[2].set_aspect("equal")
+    fig.colorbar(gt_scatter, ax=axes[2], fraction=0.046, pad=0.04)
+
+    pred_panel = pred_values if pred_values is not None else brightness
+    pred_label = "Node predictions" if pred_values is not None else "Node brightness"
+    pred_scatter = axes[3].scatter(
+        pos[:, 0],
+        pos[:, 1],
+        c=pred_panel,
+        cmap="magma",
+        s=16,
+        vmin=0.0,
+        vmax=max(float(np.max(pred_panel)), 1.0e-6),
+    )
+    axes[3].set_title(pred_label)
+    axes[3].set_xlim(-0.5, cluster.bbox_width - 0.5)
+    axes[3].set_ylim(cluster.bbox_height - 0.5, -0.5)
+    axes[3].set_aspect("equal")
+    fig.colorbar(pred_scatter, ax=axes[3], fraction=0.046, pad=0.04)
+
+    for ax in axes[1:]:
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    fig.tight_layout()
+    return fig
+
+
 class GraphBuilder:
     def __init__(self, config: GraphConfig) -> None:
         self.config = config
@@ -854,8 +1161,23 @@ def train_gat(
             batch = batch.to(device)
             optimizer.zero_grad(set_to_none=True)
             pred = model(batch)
-            weights = torch.ones_like(batch.y) + (batch.y > 0).float() * config.positive_weight
-            loss = (((pred - batch.y) ** 2) * weights).mean()
+            target = batch.y * float(config.target_scale)
+            weights = torch.ones_like(batch.y)
+            if config.positive_weight != 0.0:
+                weights = weights + (batch.y > 0).float() * config.positive_weight
+            if config.count_weight_alpha != 0.0:
+                weights = weights + batch.y * float(config.count_weight_alpha)
+
+            loss = (((pred - target) ** 2) * weights).mean()
+
+            if config.count_sum_lambda > 0.0:
+                batch_index = batch.batch
+                num_graphs = int(batch_index.max().item()) + 1 if batch_index.numel() else 0
+                pred_sums = torch.zeros(num_graphs, device=device, dtype=pred.dtype)
+                target_sums = torch.zeros(num_graphs, device=device, dtype=pred.dtype)
+                pred_sums.index_add_(0, batch_index, pred)
+                target_sums.index_add_(0, batch_index, target)
+                loss = loss + float(config.count_sum_lambda) * ((pred_sums - target_sums) ** 2).mean()
             loss.backward()
             optimizer.step()
 

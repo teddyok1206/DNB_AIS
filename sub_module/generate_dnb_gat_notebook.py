@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 
@@ -32,15 +33,18 @@ NOTEBOOK_CELLS = [
 - Block 3. DRUID `area_limit` sweep for patch-size diagnostics
 - Block 4. DRUID-based irregular contour patch extraction
 - Block 5. Graph receptive-field sweep over radius and layer count
-- Block 6. Patch-to-graph conversion with PyG `radius_graph`
-- Block 7. GATv2Conv density regression and minimal training loop
-- Block 8. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+- Block 6. Representative graph visualization for one DRUID cluster
+- Block 7. Loss weighting comparison for count-sensitive supervision
+- Block 8. Patch-to-graph conversion with PyG `radius_graph`
+- Block 9. GATv2Conv density regression and minimal training loop
+- Block 10. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
 
 ## Notes
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
 - Switch `SCENE_MODE` to `kr_full_scene` to run the same pipeline on the larger pseudo full-scene TIFF.
 - Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
+- Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
 """
     ),
     code_cell(
@@ -63,11 +67,14 @@ from sub_module.dnb_gat_pipeline import (
     SceneRaster,
     TrainingConfig,
     area_limit_sweep,
+    choose_representative_cluster,
     graph_receptive_field_sweep,
+    loss_weighting_sweep,
     make_overlay_rgb,
     predict_graphs,
     resolve_device,
     train_gat,
+    visualize_graph_cluster,
 )
 
 ROOT = Path.cwd()
@@ -75,6 +82,7 @@ STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
 OUTPUT_ROOT = ROOT / "outputs" / "DNB_GAT_v1"
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 SEED = 1
+RUN_TAG = datetime.now().strftime("run_%m%d_%H%M%S")
 
 np.random.seed(SEED)
 torch.manual_seed(SEED)
@@ -99,6 +107,7 @@ SCENES = {
             batch_size=4,
             dropout=0.05,
             positive_weight=12.0,
+            count_weight_alpha=6.0,
         ),
     },
     "kr_full_scene": {
@@ -122,6 +131,7 @@ SCENES = {
             batch_size=4,
             dropout=0.05,
             positive_weight=12.0,
+            count_weight_alpha=6.0,
         ),
     },
 }
@@ -133,6 +143,7 @@ DEVICE = resolve_device("mps")
 print(f"SCENE_MODE={SCENE_MODE}")
 print(f"DEVICE={DEVICE}")
 print(f"SEED={SEED}")
+print(f"RUN_TAG={RUN_TAG}")
 print(f"MPS available={torch.backends.mps.is_available()}")
 print(f"Scene path={ACTIVE['scene_tif']}")
 """
@@ -145,7 +156,7 @@ Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center 
     ),
     code_cell(
         """scene = SceneRaster.load(ACTIVE["scene_tif"])
-scene_output_dir = OUTPUT_ROOT / scene.key / SCENE_MODE
+scene_output_dir = OUTPUT_ROOT / scene.key / SCENE_MODE / RUN_TAG
 scene_output_dir.mkdir(parents=True, exist_ok=True)
 
 gt_resolver = GroundTruthResolver(
@@ -265,21 +276,71 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 6. Patch-to-Graph Conversion and GAT Training
+        """## Block 6. Representative Cluster Graph Visualization
 
-Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+Build the active graph set, select one cluster with non-zero GT support if available, and render the actual pixel-node graph so the neighborhood structure can be inspected directly.
 """
     ),
     code_cell(
         """graph_builder = GraphBuilder(ACTIVE["graph"])
 graphs = graph_builder.build(cluster_store.clusters)
+graph_map = {
+    int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0]): graph
+    for graph in graphs
+}
+
+representative_cluster = choose_representative_cluster(cluster_store.clusters)
+representative_graph = graph_map[representative_cluster.cluster_id]
 
 print(f"graph_count={len(graphs)}")
 print(f"total_nodes={sum(int(graph.num_nodes) for graph in graphs)}")
 print(f"first_graph_nodes={graphs[0].num_nodes}")
 print(f"first_graph_edges={graphs[0].edge_index.shape[1]}")
+print(
+    f"representative_cluster_id={representative_cluster.cluster_id}, "
+    f"gt_sum={representative_cluster.gt_sum:.1f}, "
+    f"node_count={representative_cluster.node_count}"
+)
 
-model = GATDensityRegressor(
+fig = visualize_graph_cluster(representative_cluster, representative_graph)
+graph_viz_path = scene_output_dir / f"{scene.key}_cluster_{representative_cluster.cluster_id}_graph.png"
+fig.savefig(graph_viz_path, dpi=180, bbox_inches="tight")
+plt.show()
+print(f"graph_viz_path={graph_viz_path}")
+"""
+    ),
+    markdown_cell(
+        """## Block 7. Loss Weighting Comparison
+
+Compare several supervision variants on the same graph set: the current positive-pixel baseline, count-aware weighting, count-aware weighting with a patch-sum constraint, and a reference-only target scaling run. The last option is included only to show what happens when the target unit itself is stretched.
+"""
+    ),
+    code_cell(
+        """if SCENE_MODE == "batch_demo":
+    loss_weighting_table = loss_weighting_sweep(
+        scene=scene,
+        gt_count_map=gt_count_map,
+        clusters=cluster_store.clusters,
+        graph_config=ACTIVE["graph"],
+        base_training_config=ACTIVE["training"],
+        device=DEVICE,
+        seed=SEED,
+    )
+    loss_weighting_table.to_csv(scene_output_dir / "loss_weighting_sweep.csv", index=False)
+    display(loss_weighting_table)
+else:
+    loss_weighting_table = pd.DataFrame()
+    print("loss weighting sweep skipped outside batch_demo mode.")
+"""
+    ),
+    markdown_cell(
+        """## Block 8. Patch-to-Graph Conversion and GAT Training
+
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+"""
+    ),
+    code_cell(
+        """model = GATDensityRegressor(
     in_channels=3,
     hidden_channels=ACTIVE["training"].hidden_channels,
     heads=ACTIVE["training"].heads,
@@ -293,14 +354,33 @@ display(history)
 """
     ),
     markdown_cell(
-        """## Block 7. Cluster Inference and Lifetime-Weighted Scene Merge
+        """## Block 9. Cluster Inference and Representative Prediction View
 
-Predict each cluster graph, map predictions back to the original pixel grid, and combine overlaps by lifetime-weighted averaging. The result is saved as a geocoded GeoTIFF on the same grid as the input scene.
+Predict each cluster graph, then revisit the representative cluster to compare node-level predictions against the graph structure before the full-scene merge.
 """
     ),
     code_cell(
         """predictions = predict_graphs(model, graphs, DEVICE)
-assembler = SceneAssembler(scene)
+representative_pred = predictions[representative_cluster.cluster_id]
+fig = visualize_graph_cluster(
+    representative_cluster,
+    representative_graph,
+    pred_values=representative_pred,
+)
+pred_viz_path = scene_output_dir / f"{scene.key}_cluster_{representative_cluster.cluster_id}_prediction.png"
+fig.savefig(pred_viz_path, dpi=180, bbox_inches="tight")
+plt.show()
+print(f"pred_viz_path={pred_viz_path}")
+"""
+    ),
+    markdown_cell(
+        """## Block 10. Lifetime-Weighted Scene Merge and GeoTIFF Export
+
+Map each cluster prediction back to the original pixel grid, combine overlaps by lifetime-weighted averaging, and save the merged result as a geocoded density heatmap GeoTIFF.
+"""
+    ),
+    code_cell(
+        """assembler = SceneAssembler(scene)
 for cluster in cluster_store.clusters:
     assembler.accumulate(cluster, predictions[cluster.cluster_id])
 
@@ -329,9 +409,12 @@ axes[1, 1].imshow(overlay_rgb)
 axes[1, 1].set_title("Radiance + predicted heatmap overlay")
 axes[1, 1].set_axis_off()
 plt.tight_layout()
+overview_viz_path = scene_output_dir / f"{scene.key}_scene_overview.png"
+fig.savefig(overview_viz_path, dpi=180, bbox_inches="tight")
 plt.show()
 
 print(f"heatmap_path={heatmap_path}")
+print(f"overview_viz_path={overview_viz_path}")
 print(f"heatmap_nonzero_pixels={(heatmap > 0).sum()}")
 print(f"heatmap_min={heatmap.min():.6f}")
 print(f"heatmap_max={heatmap.max():.6f}")
