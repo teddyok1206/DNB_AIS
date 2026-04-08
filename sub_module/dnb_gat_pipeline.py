@@ -258,10 +258,12 @@ class TrainingConfig:
     heads: int = 4
     num_layers: int = 3
     dropout: float = 0.1
+    output_activation: str = "softplus"
     lr: float = 1.0e-3
     weight_decay: float = 1.0e-4
     epochs: int = 4
     batch_size: int = 4
+    loss_name: str = "poisson_nll"
     positive_weight: float = 8.0
     count_weight_alpha: float = 0.0
     count_sum_lambda: float = 0.0
@@ -763,6 +765,7 @@ def graph_receptive_field_sweep(
                 heads=training_config.heads,
                 num_layers=training_config.num_layers,
                 dropout=training_config.dropout,
+                output_activation=training_config.output_activation,
             )
 
             history = train_gat(model, graphs, device, training_config)
@@ -806,7 +809,8 @@ def graph_receptive_field_sweep(
                     "total_edges": total_edges,
                     "mean_edges_per_node": float(total_edges / max(total_nodes, 1)),
                     "positive_graph_nodes": positive_count,
-                    "final_train_mse": float(history["train_mse"].iloc[-1]),
+                    "loss_name": training_config.loss_name,
+                    "final_train_loss": float(history["train_loss"].iloc[-1]),
                     "graph_topk_hits": graph_topk_hits,
                     "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
                     "gt_node_pred_mean": gt_node_pred_mean,
@@ -908,6 +912,7 @@ def loss_weighting_sweep(
             heads=training_config.heads,
             num_layers=training_config.num_layers,
             dropout=training_config.dropout,
+            output_activation=training_config.output_activation,
         )
         history = train_gat(model, graphs, device, training_config)
         predictions = predict_graphs(model, graphs, device)
@@ -948,10 +953,11 @@ def loss_weighting_sweep(
                 "count_weight_alpha": float(training_config.count_weight_alpha),
                 "count_sum_lambda": float(training_config.count_sum_lambda),
                 "target_scale": float(training_config.target_scale),
+                "loss_name": training_config.loss_name,
                 "graph_count": int(len(graphs)),
                 "total_nodes": int(sum(int(graph.num_nodes) for graph in graphs)),
                 "positive_graph_nodes": positive_count,
-                "final_train_mse": float(history["train_mse"].iloc[-1]),
+                "final_train_loss": float(history["train_loss"].iloc[-1]),
                 "graph_topk_hits": graph_topk_hits,
                 "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
                 "scene_topk_hits": scene_topk_hits,
@@ -1116,6 +1122,7 @@ class GATDensityRegressor(nn.Module):
         heads: int = 4,
         num_layers: int = 3,
         dropout: float = 0.1,
+        output_activation: str = "softplus",
     ) -> None:
         super().__init__()
         self.in_channels = int(in_channels)
@@ -1123,6 +1130,7 @@ class GATDensityRegressor(nn.Module):
         self.heads = int(heads)
         self.num_layers = int(num_layers)
         self.dropout = dropout
+        self.output_activation = str(output_activation).lower()
         self.convs = nn.ModuleList()
         self.convs.append(GATv2Conv(in_channels, hidden_channels, heads=heads, concat=False, dropout=dropout))
         for _ in range(max(num_layers - 2, 0)):
@@ -1139,6 +1147,7 @@ class GATDensityRegressor(nn.Module):
             "heads": self.heads,
             "num_layers": self.num_layers,
             "dropout": float(self.dropout),
+            "output_activation": self.output_activation,
         }
 
     def forward(self, data: Data) -> torch.Tensor:
@@ -1149,7 +1158,11 @@ class GATDensityRegressor(nn.Module):
             x = F.elu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.head(x).squeeze(-1)
-        return F.relu(x)
+        if self.output_activation == "relu":
+            return F.relu(x)
+        if self.output_activation == "softplus":
+            return F.softplus(x)
+        raise ValueError(f"Unsupported output activation: {self.output_activation}")
 
 
 def count_model_parameters(model: nn.Module, *, trainable_only: bool = False) -> int:
@@ -1230,6 +1243,8 @@ def load_model_checkpoint(
         raise ValueError(f"Unsupported model class in checkpoint: {bundle.get('model_class')}")
 
     architecture = bundle.get("architecture", {})
+    if "output_activation" not in architecture:
+        architecture["output_activation"] = "relu"
     model = GATDensityRegressor(**architecture)
     model.load_state_dict(bundle["state_dict"])
     model.eval()
@@ -1252,6 +1267,7 @@ def train_gat(
     loader = DataLoader(graphs, batch_size=config.batch_size, shuffle=True)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
     history = []
+    loss_name = str(config.loss_name).lower()
 
     model.to(device)
     for epoch in range(1, config.epochs + 1):
@@ -1269,7 +1285,21 @@ def train_gat(
             if config.count_weight_alpha != 0.0:
                 weights = weights + batch.y * float(config.count_weight_alpha)
 
-            loss = (((pred - target) ** 2) * weights).mean()
+            if loss_name == "mse":
+                element_loss = (pred - target) ** 2
+            elif loss_name == "poisson_nll":
+                element_loss = F.poisson_nll_loss(
+                    pred,
+                    target,
+                    log_input=False,
+                    full=False,
+                    eps=1.0e-8,
+                    reduction="none",
+                )
+            else:
+                raise ValueError(f"Unsupported loss_name: {config.loss_name}")
+
+            loss = (element_loss * weights).mean()
 
             if config.count_sum_lambda > 0.0:
                 batch_index = batch.batch
@@ -1288,7 +1318,8 @@ def train_gat(
         history.append(
             {
                 "epoch": epoch,
-                "train_mse": epoch_loss / max(epoch_nodes, 1),
+                "loss_name": loss_name,
+                "train_loss": epoch_loss / max(epoch_nodes, 1),
                 "num_graphs": len(graphs),
                 "num_nodes": epoch_nodes,
             }

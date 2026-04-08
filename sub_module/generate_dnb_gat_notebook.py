@@ -45,6 +45,7 @@ NOTEBOOK_CELLS = [
 - Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 - Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
+- Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)` so ship-count targets are treated as non-negative intensity values rather than only squared-error residuals.
 """
     ),
     code_cell(
@@ -109,6 +110,8 @@ SCENES = {
             epochs=4,
             batch_size=4,
             dropout=0.05,
+            output_activation="softplus",
+            loss_name="poisson_nll",
             positive_weight=12.0,
             count_weight_alpha=6.0,
         ),
@@ -133,6 +136,8 @@ SCENES = {
             epochs=4,
             batch_size=4,
             dropout=0.05,
+            output_activation="softplus",
+            loss_name="poisson_nll",
             positive_weight=12.0,
             count_weight_alpha=6.0,
         ),
@@ -315,7 +320,7 @@ print(f"graph_viz_path={graph_viz_path}")
     markdown_cell(
         """## Block 7. Loss Weighting Comparison
 
-Compare several supervision variants on the same graph set: the current positive-pixel baseline, count-aware weighting, count-aware weighting with a patch-sum constraint, and a reference-only target scaling run. The last option is included only to show what happens when the target unit itself is stretched.
+Compare several supervision variants on the same graph set. With the current default, the model uses a `Softplus` head and `PoissonNLLLoss`; the sweep keeps the count-aware weighting variants and a reference-only target scaling run so the previous MSE-family behavior can still be contrasted.
 """
     ),
     code_cell(
@@ -339,7 +344,7 @@ else:
     markdown_cell(
         """## Block 8. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
-Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
 """
     ),
     code_cell(
@@ -349,6 +354,7 @@ Each pixel inside a DRUID contour mask becomes a node. Node features are `[brigh
     heads=ACTIVE["training"].heads,
     num_layers=ACTIVE["training"].num_layers,
     dropout=ACTIVE["training"].dropout,
+    output_activation=ACTIVE["training"].output_activation,
 )
 
 history = train_gat(model, graphs, DEVICE, ACTIVE["training"])
@@ -379,6 +385,8 @@ print(f"checkpoint_size_bytes={checkpoint_info['file_size_bytes']}")
 print(f"checkpoint_size_mb={checkpoint_info['file_size_mb']:.4f}")
 print(f"reloaded_model_class={type(reloaded_model).__name__}")
 print(f"reloaded_num_layers={reloaded_bundle['architecture']['num_layers']}")
+print(f"loss_name={ACTIVE['training'].loss_name}")
+print(f"output_activation={ACTIVE['training'].output_activation}")
 """
     ),
     markdown_cell(

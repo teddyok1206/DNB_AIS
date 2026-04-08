@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 7
+
+1. 업데이트 날짜, 시각
+- 2026-04-08 20:36 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 선박 후보를 찾은 뒤 irregular contour patch를 만든다. patch membership은 DRUID smooth field 기준으로 복원하고, GAT 입력 밝기는 raw radiance를 유지한다. 각 patch는 pixel-node graph로 변환되며 GATv2Conv가 픽셀별 선박 밀도를 예측한다. 현재 기본 회귀는 Softplus head와 PoissonNLLLoss를 사용하고, 학습 후 checkpoint를 로컬 `.pt`와 `.json`으로 저장한다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- 기본 loss를 `MSE`에서 `PoissonNLLLoss`로, output head를 `ReLU`에서 `Softplus`로 바꿨다. 같은 batch_demo 조건으로 이전 MSE 실험과 직접 비교하는 CSV와 새 heatmap/checkpoint를 저장했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이론적으로는 count target에 더 자연스럽지만, 현재 batch_demo 비교에선 Poisson 설정이 이전 MSE보다 top-k hit와 peak에서 우세하지 않았다. Poisson용 가중치와 epoch 재조정이 필요하다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- Poisson 가중치/epoch 재튜닝 또는 MSE 유지 여부 결정
+
 ## Entry 6
 
 1. 업데이트 날짜, 시각
