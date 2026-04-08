@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 16
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:54 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 메인 graph는 edge-decay GT spreading(`y_edge_decay`)을 기본 supervision으로 쓰고, raw point GT는 비교용으로만 유지한다. 이번에는 테스트 전용 비교 산출물과 overfit 결과 디렉터리를 정리해 출력 폴더를 기본 `batch_demo` 결과 중심으로 정돈했다. MPS 기반 기본 경로와 undirected graph spreading은 그대로 유지한다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- `batch_demo_compare`, `inverse_brightness_compare`, `poisson_compare`, `overfit_troubleshooting` 등 테스트 산출물을 삭제했다. 현재 규모에선 directed edge로 바꾸지 않아도 spreading 비용이 감당 가능하다고 판단했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- directed edge 최적화는 아직 구현하지 않았다. 다만 현재 `batch_demo` 규모에선 필요성이 크지 않다. larger scene이나 더 큰 반경에서 edge 수가 급증하면 다시 검토해야 한다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- MPS 기준 smoothed GT 기본 경로 재실행 및 larger scene 비용 점검
+
 ## Entry 15
 
 1. 업데이트 날짜, 시각
