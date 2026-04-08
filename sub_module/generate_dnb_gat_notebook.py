@@ -35,7 +35,7 @@ NOTEBOOK_CELLS = [
 - Block 5. Graph receptive-field sweep over radius and layer count
 - Block 6. Representative graph visualization for one DRUID cluster
 - Block 7. Loss weighting comparison for count-sensitive supervision
-- Block 8. Positive-weight sweep under the current loss model
+- Block 8. Weighting-grid sweep under the current loss model
 - Block 9. Patch-to-graph conversion with PyG `radius_graph`
 - Block 10. GATv2Conv density regression and minimal training loop
 - Block 11. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
@@ -82,6 +82,7 @@ from sub_module.dnb_gat_pipeline import (
     save_model_checkpoint,
     train_gat,
     visualize_graph_cluster,
+    weighting_grid_sweep,
 )
 
 ROOT = Path.cwd()
@@ -348,14 +349,14 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 8. Positive-Weight Sweep Under the Current Loss Model
+        """## Block 8. Weighting-Grid Sweep Under the Current Loss Model
 
-Run a focused sweep over `positive_weight` while keeping the rest of the current training setup fixed. This isolates the effect of binary positive-pixel upweighting from `count_weight_alpha`.
+Run a small grid over `positive_weight` and `count_weight_alpha` so the current inverse-brightness setting can be checked from fully unweighted training through several positive-emphasis variants.
 """
     ),
     code_cell(
         """if SCENE_MODE == "batch_demo":
-    positive_weight_table = positive_weight_sweep(
+    positive_weight_table = weighting_grid_sweep(
         scene=scene,
         gt_count_map=gt_count_map,
         clusters=cluster_store.clusters,
@@ -363,13 +364,14 @@ Run a focused sweep over `positive_weight` while keeping the rest of the current
         base_training_config=ACTIVE["training"],
         device=DEVICE,
         positive_weights=[0.0, 10.0, 20.0, 30.0],
+        count_weight_alphas=[0.0, 6.0],
         seed=SEED,
     )
-    positive_weight_table.to_csv(scene_output_dir / "positive_weight_sweep.csv", index=False)
+    positive_weight_table.to_csv(scene_output_dir / "weighting_grid_sweep.csv", index=False)
     display(positive_weight_table)
 else:
     positive_weight_table = pd.DataFrame()
-    print("positive-weight sweep skipped outside batch_demo mode.")
+    print("weighting-grid sweep skipped outside batch_demo mode.")
 """
     ),
     markdown_cell(

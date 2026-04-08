@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 10
+
+1. 업데이트 날짜, 시각
+- 2026-04-08 20:52 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 선박 후보를 찾은 뒤 irregular contour patch를 만든다. patch membership은 DRUID smooth field 기준으로 복원한다. DRUID는 기존 compressed GeoTIFF 밝기를 그대로 보며, GAT brightness feature만 `[A]`의 arctan 압축식을 inverse로 되돌린 radiance 값을 추가 정규화 없이 사용한다. 현재 기본 회귀는 Softplus head와 PoissonNLLLoss를 사용하고, notebook에서 weighting grid sweep을 바로 돌릴 수 있다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- inverse brightness 기준으로 `positive_weight`와 `count_weight_alpha`의 8개 조합 grid sweep을 추가했다. notebook도 단일 positive-weight sweep 대신 weighting-grid CSV를 저장하도록 바꿨다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 현재 inverse brightness 세팅에서는 weighting이 output amplitude만 키우고 spatial ranking은 거의 못 바꿨다. top-k hit가 모든 조합에서 동일해, 학습 안정성과 feature scale 재설계가 필요하다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- inverse brightness feature scaling 또는 epoch 증가 비교
+
 ## Entry 9
 
 1. 업데이트 날짜, 시각
