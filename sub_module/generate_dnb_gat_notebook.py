@@ -47,6 +47,7 @@ NOTEBOOK_CELLS = [
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 - Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
 - Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)` so ship-count targets are treated as non-negative intensity values rather than only squared-error residuals.
+- DRUID still sees the existing compressed GeoTIFF brightness, but the GAT brightness feature defaults to the inverse of the `[A]` arctan compression without re-normalization.
 """
     ),
     code_cell(
@@ -104,7 +105,7 @@ SCENES = {
             min_nodes=16,
             max_nodes=2500,
         ),
-        "graph": GraphConfig(radius_pixels=4.0),
+        "graph": GraphConfig(radius_pixels=4.0, brightness_mode="reverse_arctan_raw"),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -130,7 +131,7 @@ SCENES = {
             min_nodes=32,
             max_nodes=2500,
         ),
-        "graph": GraphConfig(radius_pixels=4.0),
+        "graph": GraphConfig(radius_pixels=4.0, brightness_mode="reverse_arctan_raw"),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -156,6 +157,7 @@ print(f"SEED={SEED}")
 print(f"RUN_TAG={RUN_TAG}")
 print(f"MPS available={torch.backends.mps.is_available()}")
 print(f"Scene path={ACTIVE['scene_tif']}")
+print(f"Graph brightness mode={ACTIVE['graph'].brightness_mode}")
 """
     ),
     markdown_cell(
@@ -306,6 +308,8 @@ print(f"graph_count={len(graphs)}")
 print(f"total_nodes={sum(int(graph.num_nodes) for graph in graphs)}")
 print(f"first_graph_nodes={graphs[0].num_nodes}")
 print(f"first_graph_edges={graphs[0].edge_index.shape[1]}")
+print(f"first_graph_brightness_min={float(graphs[0].x[:, 0].min()):.6e}")
+print(f"first_graph_brightness_max={float(graphs[0].x[:, 0].max()):.6e}")
 print(
     f"representative_cluster_id={representative_cluster.cluster_id}, "
     f"gt_sum={representative_cluster.gt_sum:.1f}, "
