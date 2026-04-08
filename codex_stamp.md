@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 17
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:56 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 메인 graph는 edge-decay GT spreading(`y_edge_decay`)을 기본 supervision으로 쓰고, raw point GT는 비교용으로만 유지한다. 이번에는 weighting 두 종류의 역할을 명확히 구분했고, 누적 작업 기록 `MMDD_HHMM.md` 파일들을 새 `codex_logs/` 폴더로 이동해 이후 기록도 그 안에 저장하는 기준으로 정리했다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- `04*.md` 작업 기록 파일들을 모두 `codex_logs/`로 옮겼다. directed edge는 현재 규모에선 속도상 이득이 크지 않다고 판단해 유지하지 않았다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- `codex_logs/` 이동은 완료됐지만, 과거 일부 메시지에서 언급한 경로는 루트 기준으로 남아 있을 수 있다. directed edge 최적화는 larger scene에서만 다시 검토하면 된다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- codex_logs 기준 유지, smoothed GT 기본 경로 재검증
+
 ## Entry 16
 
 1. 업데이트 날짜, 시각
