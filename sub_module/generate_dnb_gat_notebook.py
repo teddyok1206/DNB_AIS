@@ -35,9 +35,10 @@ NOTEBOOK_CELLS = [
 - Block 5. Graph receptive-field sweep over radius and layer count
 - Block 6. Representative graph visualization for one DRUID cluster
 - Block 7. Loss weighting comparison for count-sensitive supervision
-- Block 8. Patch-to-graph conversion with PyG `radius_graph`
-- Block 9. GATv2Conv density regression and minimal training loop
-- Block 10. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+- Block 8. Positive-weight sweep under the current loss model
+- Block 9. Patch-to-graph conversion with PyG `radius_graph`
+- Block 10. GATv2Conv density regression and minimal training loop
+- Block 11. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
 
 ## Notes
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
@@ -75,6 +76,7 @@ from sub_module.dnb_gat_pipeline import (
     loss_weighting_sweep,
     make_overlay_rgb,
     predict_graphs,
+    positive_weight_sweep,
     resolve_device,
     save_model_checkpoint,
     train_gat,
@@ -342,7 +344,32 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 8. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
+        """## Block 8. Positive-Weight Sweep Under the Current Loss Model
+
+Run a focused sweep over `positive_weight` while keeping the rest of the current training setup fixed. This isolates the effect of binary positive-pixel upweighting from `count_weight_alpha`.
+"""
+    ),
+    code_cell(
+        """if SCENE_MODE == "batch_demo":
+    positive_weight_table = positive_weight_sweep(
+        scene=scene,
+        gt_count_map=gt_count_map,
+        clusters=cluster_store.clusters,
+        graph_config=ACTIVE["graph"],
+        base_training_config=ACTIVE["training"],
+        device=DEVICE,
+        positive_weights=[0.0, 10.0, 20.0, 30.0],
+        seed=SEED,
+    )
+    positive_weight_table.to_csv(scene_output_dir / "positive_weight_sweep.csv", index=False)
+    display(positive_weight_table)
+else:
+    positive_weight_table = pd.DataFrame()
+    print("positive-weight sweep skipped outside batch_demo mode.")
+"""
+    ),
+    markdown_cell(
+        """## Block 9. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
 Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
 """
@@ -390,7 +417,7 @@ print(f"output_activation={ACTIVE['training'].output_activation}")
 """
     ),
     markdown_cell(
-        """## Block 9. Cluster Inference and Representative Prediction View
+        """## Block 10. Cluster Inference and Representative Prediction View
 
 Predict each cluster graph, then revisit the representative cluster to compare node-level predictions against the graph structure before the full-scene merge.
 """
@@ -410,7 +437,7 @@ print(f"pred_viz_path={pred_viz_path}")
 """
     ),
     markdown_cell(
-        """## Block 10. Lifetime-Weighted Scene Merge and GeoTIFF Export
+        """## Block 11. Lifetime-Weighted Scene Merge and GeoTIFF Export
 
 Map each cluster prediction back to the original pixel grid, combine overlaps by lifetime-weighted averaging, and save the merged result as a geocoded density heatmap GeoTIFF.
 """
