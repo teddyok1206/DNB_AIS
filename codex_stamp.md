@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 13
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 00:27 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 기본 파이프라인은 raw point GT와 compressed brightness를 유지한다. troubleshooting 경로에서는 undirected graph와 edge-decay smoothed GT(`y_edge_decay`)를 만들어 single-graph overfit 진단을 수행한다. 현재 notebook의 troubleshooting block은 `positive_weight x count_weight_alpha` 4x4 sweep를 포함해 두 가중의 단독 효과와 조합 효과를 같이 비교한다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- `count_weight_alpha`를 overfit troubleshooting의 full grid에 포함했다. `cwa=100` 단독이 `pred_max≈1.033`으로 가장 높았고, `pw20` 단독도 `≈0.996`까지 올라갔다. 조합도 일부는 1 부근까지 회복됐다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이번 결론은 single-graph 기준이다. `count_weight_alpha`의 거동이 비단조적이고, 최고 `pred_max`와 최저 `train_loss`가 같은 설정에서 나오지 않아 patch set 학습에서의 일반화 검증이 필요하다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- 소규모 patch set에서 `count_weight_alpha` 일반화 여부 검증
+
 ## Entry 12
 
 1. 업데이트 날짜, 시각

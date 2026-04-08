@@ -326,7 +326,7 @@ print(f"graph_viz_path={graph_viz_path}")
     markdown_cell(
         """## Block 7. Single-Graph Overfit Troubleshooting
 
-This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch.
+This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch. A full `positive_weight x count_weight_alpha` sweep is included so uniform positive emphasis can be compared against target-magnitude-aware emphasis and their combinations.
 """
     ),
     code_cell(
@@ -396,67 +396,34 @@ overfit_configs = [
             target_field="y",
         ),
     ),
-    (
-        "smooth_mse_unweighted",
-        replace(
-            ACTIVE["training"],
-            epochs=1000,
-            batch_size=1,
-            dropout=0.0,
-            weight_decay=0.0,
-            lr=3.0e-3,
-            loss_name="mse",
-            positive_weight=0.0,
-            count_weight_alpha=0.0,
-            target_field="y_edge_decay",
-        ),
-    ),
-    (
-        "smooth_mse_pw20",
-        replace(
-            ACTIVE["training"],
-            epochs=1000,
-            batch_size=1,
-            dropout=0.0,
-            weight_decay=0.0,
-            lr=3.0e-3,
-            loss_name="mse",
-            positive_weight=20.0,
-            count_weight_alpha=0.0,
-            target_field="y_edge_decay",
-        ),
-    ),
-    (
-        "smooth_mse_pw50",
-        replace(
-            ACTIVE["training"],
-            epochs=1000,
-            batch_size=1,
-            dropout=0.0,
-            weight_decay=0.0,
-            lr=3.0e-3,
-            loss_name="mse",
-            positive_weight=50.0,
-            count_weight_alpha=0.0,
-            target_field="y_edge_decay",
-        ),
-    ),
-    (
-        "smooth_mse_pw100",
-        replace(
-            ACTIVE["training"],
-            epochs=1000,
-            batch_size=1,
-            dropout=0.0,
-            weight_decay=0.0,
-            lr=3.0e-3,
-            loss_name="mse",
-            positive_weight=100.0,
-            count_weight_alpha=0.0,
-            target_field="y_edge_decay",
-        ),
-    ),
 ]
+
+smooth_weight_values = [0.0, 20.0, 50.0, 100.0]
+for positive_weight in smooth_weight_values:
+    for count_weight_alpha in smooth_weight_values:
+        config_name = (
+            f"smooth_mse_pw{int(positive_weight)}_cwa{int(count_weight_alpha)}"
+            if positive_weight or count_weight_alpha
+            else "smooth_mse_unweighted"
+        )
+        overfit_configs.append(
+            (
+                config_name,
+                replace(
+                    ACTIVE["training"],
+                    epochs=1000,
+                    batch_size=1,
+                    dropout=0.0,
+                    weight_decay=0.0,
+                    lr=3.0e-3,
+                    loss_name="mse",
+                    positive_weight=float(positive_weight),
+                    count_weight_alpha=float(count_weight_alpha),
+                    target_field="y_edge_decay",
+                ),
+            )
+        )
+ 
 
 overfit_table, overfit_predictions, overfit_histories = single_graph_overfit_sweep(
     troubleshooting_graph,
