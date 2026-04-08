@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 19
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 01:29 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 메인 graph는 edge-decay GT spreading(`y_edge_decay`)을 기본 supervision으로 쓰고, raw point GT는 비교용으로만 유지한다. 현재 MPS 기반 `batch_demo` 최신 결과는 루트 출력 경로에 동기화돼 있으며, 다음 연구 단계의 핵심 과제는 퍼진 GT의 총합을 원본 선박 척수와 일치시키는 `sum-preserving edge-decay GT` 설계와 적용이다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- 코드 변경 없이 다음 진행 목표를 `sum-preserving edge-decay GT`로 확정했다. 이후 GT 해석 단위를 다시 척수 합과 맞추는 방향으로 진행한다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 현재 `y_edge_decay`는 총합이 원본 척수와 일치하지 않아 출력을 직접 `'척'`으로 읽기 어렵다. 이 문제를 해결하는 정규화/보존 방식은 아직 미구현이다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- sum-preserving edge-decay GT 설계 및 메인 경로 적용
+
 ## Entry 18
 
 1. 업데이트 날짜, 시각
