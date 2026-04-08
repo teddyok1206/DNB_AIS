@@ -8,7 +8,7 @@ import shutil
 import sqlite3
 import sys
 import warnings
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -1118,6 +1118,10 @@ class GATDensityRegressor(nn.Module):
         dropout: float = 0.1,
     ) -> None:
         super().__init__()
+        self.in_channels = int(in_channels)
+        self.hidden_channels = int(hidden_channels)
+        self.heads = int(heads)
+        self.num_layers = int(num_layers)
         self.dropout = dropout
         self.convs = nn.ModuleList()
         self.convs.append(GATv2Conv(in_channels, hidden_channels, heads=heads, concat=False, dropout=dropout))
@@ -1128,6 +1132,15 @@ class GATDensityRegressor(nn.Module):
         nn.init.xavier_uniform_(self.head.weight)
         nn.init.constant_(self.head.bias, 0.1)
 
+    def architecture_dict(self) -> dict[str, Any]:
+        return {
+            "in_channels": self.in_channels,
+            "hidden_channels": self.hidden_channels,
+            "heads": self.heads,
+            "num_layers": self.num_layers,
+            "dropout": float(self.dropout),
+        }
+
     def forward(self, data: Data) -> torch.Tensor:
         x = data.x
         edge_index = data.edge_index
@@ -1137,6 +1150,94 @@ class GATDensityRegressor(nn.Module):
             x = F.dropout(x, p=self.dropout, training=self.training)
         x = self.head(x).squeeze(-1)
         return F.relu(x)
+
+
+def count_model_parameters(model: nn.Module, *, trainable_only: bool = False) -> int:
+    if trainable_only:
+        return int(sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad))
+    return int(sum(parameter.numel() for parameter in model.parameters()))
+
+
+def save_model_checkpoint(
+    output_path: str | Path,
+    model: nn.Module,
+    graph_config: GraphConfig,
+    training_config: TrainingConfig,
+    *,
+    scene: SceneRaster | None = None,
+    metadata: dict[str, Any] | None = None,
+    save_summary_json: bool = True,
+) -> dict[str, Any]:
+    output_path = Path(output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    architecture = model.architecture_dict() if hasattr(model, "architecture_dict") else {}
+    parameter_count = count_model_parameters(model)
+    trainable_parameter_count = count_model_parameters(model, trainable_only=True)
+    bundle = {
+        "model_class": type(model).__name__,
+        "architecture": architecture,
+        "graph_config": asdict(graph_config),
+        "training_config": asdict(training_config),
+        "parameter_count": parameter_count,
+        "trainable_parameter_count": trainable_parameter_count,
+        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "metadata": metadata or {},
+        "state_dict": {key: value.detach().cpu() for key, value in model.state_dict().items()},
+    }
+    if scene is not None:
+        bundle["scene"] = {
+            "scene_key": scene.key,
+            "scene_path": str(scene.path),
+            "shape": [int(scene.height), int(scene.width)],
+            "crs": str(scene.crs),
+        }
+
+    torch.save(bundle, output_path)
+    file_size_bytes = int(output_path.stat().st_size)
+
+    summary = {
+        "checkpoint_path": str(output_path),
+        "summary_json_path": "",
+        "model_class": bundle["model_class"],
+        "architecture": architecture,
+        "graph_config": bundle["graph_config"],
+        "training_config": bundle["training_config"],
+        "parameter_count": parameter_count,
+        "trainable_parameter_count": trainable_parameter_count,
+        "file_size_bytes": file_size_bytes,
+        "file_size_mb": float(file_size_bytes / (1024 ** 2)),
+        "saved_at": bundle["saved_at"],
+        "metadata": bundle["metadata"],
+    }
+
+    if save_summary_json:
+        summary_path = output_path.with_suffix(".json")
+        summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        summary["summary_json_path"] = str(summary_path)
+
+    return summary
+
+
+def load_model_checkpoint(
+    checkpoint_path: str | Path,
+    *,
+    map_location: str | torch.device = "cpu",
+) -> tuple[nn.Module, dict[str, Any]]:
+    checkpoint_path = Path(checkpoint_path).resolve()
+    bundle = torch.load(checkpoint_path, map_location=map_location)
+    if bundle.get("model_class") != "GATDensityRegressor":
+        raise ValueError(f"Unsupported model class in checkpoint: {bundle.get('model_class')}")
+
+    architecture = bundle.get("architecture", {})
+    model = GATDensityRegressor(**architecture)
+    model.load_state_dict(bundle["state_dict"])
+    model.eval()
+    if isinstance(map_location, torch.device):
+        model.to(map_location)
+    elif str(map_location) not in {"cpu", "meta"}:
+        model.to(torch.device(str(map_location)))
+    return model, bundle
 
 
 def train_gat(

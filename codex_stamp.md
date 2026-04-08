@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 6
+
+1. 업데이트 날짜, 시각
+- 2026-04-08 20:23 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 선박 후보를 찾은 뒤 irregular contour patch를 만든다. patch membership은 DRUID smooth field 기준으로 복원하고, GAT 입력 밝기는 raw radiance를 유지한다. 각 patch는 pixel-node graph로 변환되며 GATv2Conv가 픽셀별 선박 밀도를 예측한다. 학습 후에는 모델 checkpoint를 로컬 `.pt`와 요약 `.json`으로 저장해 이후 재로딩과 재사용이 가능하다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- GAT 모델의 아키텍처, state_dict, graph/training config, 실행 metadata를 로컬 checkpoint로 저장하고 다시 불러오는 기능을 추가했다. notebook에서도 저장 경로와 파일 크기를 출력한다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- KR full-scene용 checkpoint는 아직 저장 검증하지 않았다. Desktop/iCloud 경로에서는 기존 출력 파일 overwrite가 멈출 수 있어 fresh subdir 저장 방식을 계속 유지해야 한다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- KR full-scene checkpoint 검증, min_nodes 확정, count-aware loss 후속 조정
+
 ## Entry 5
 
 1. 업데이트 날짜, 시각

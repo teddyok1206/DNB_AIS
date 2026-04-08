@@ -68,11 +68,14 @@ from sub_module.dnb_gat_pipeline import (
     TrainingConfig,
     area_limit_sweep,
     choose_representative_cluster,
+    count_model_parameters,
     graph_receptive_field_sweep,
+    load_model_checkpoint,
     loss_weighting_sweep,
     make_overlay_rgb,
     predict_graphs,
     resolve_device,
+    save_model_checkpoint,
     train_gat,
     visualize_graph_cluster,
 )
@@ -334,7 +337,7 @@ else:
 """
     ),
     markdown_cell(
-        """## Block 8. Patch-to-Graph Conversion and GAT Training
+        """## Block 8. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
 Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
 """
@@ -350,7 +353,32 @@ Each pixel inside a DRUID contour mask becomes a node. Node features are `[brigh
 
 history = train_gat(model, graphs, DEVICE, ACTIVE["training"])
 history.to_csv(scene_output_dir / "training_history.csv", index=False)
+checkpoint_info = save_model_checkpoint(
+    scene_output_dir / f"{scene.key}_gat_checkpoint.pt",
+    model,
+    graph_config=ACTIVE["graph"],
+    training_config=ACTIVE["training"],
+    scene=scene,
+    metadata={
+        "scene_mode": SCENE_MODE,
+        "run_tag": RUN_TAG,
+        "seed": SEED,
+        "graph_count": len(graphs),
+        "cluster_count": len(cluster_store.clusters),
+        "total_nodes": int(sum(int(graph.num_nodes) for graph in graphs)),
+    },
+)
+reloaded_model, reloaded_bundle = load_model_checkpoint(checkpoint_info["checkpoint_path"], map_location="cpu")
+
 display(history)
+print(f"parameter_count={count_model_parameters(model)}")
+print(f"trainable_parameter_count={count_model_parameters(model, trainable_only=True)}")
+print(f"checkpoint_path={checkpoint_info['checkpoint_path']}")
+print(f"checkpoint_summary_json={checkpoint_info['summary_json_path']}")
+print(f"checkpoint_size_bytes={checkpoint_info['file_size_bytes']}")
+print(f"checkpoint_size_mb={checkpoint_info['file_size_mb']:.4f}")
+print(f"reloaded_model_class={type(reloaded_model).__name__}")
+print(f"reloaded_num_layers={reloaded_bundle['architecture']['num_layers']}")
 """
     ),
     markdown_cell(
