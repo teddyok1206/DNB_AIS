@@ -31,9 +31,10 @@ NOTEBOOK_CELLS = [
 - Block 2. Scene loading and GT density map preparation
 - Block 3. DRUID `area_limit` sweep for patch-size diagnostics
 - Block 4. DRUID-based irregular contour patch extraction
-- Block 5. Patch-to-graph conversion with PyG `radius_graph`
-- Block 6. GATv2Conv density regression and minimal training loop
-- Block 7. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+- Block 5. Graph receptive-field sweep over radius and layer count
+- Block 6. Patch-to-graph conversion with PyG `radius_graph`
+- Block 7. GATv2Conv density regression and minimal training loop
+- Block 8. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
 
 ## Notes
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
@@ -62,6 +63,7 @@ from sub_module.dnb_gat_pipeline import (
     SceneRaster,
     TrainingConfig,
     area_limit_sweep,
+    graph_receptive_field_sweep,
     make_overlay_rgb,
     predict_graphs,
     resolve_device,
@@ -88,6 +90,7 @@ SCENES = {
             min_nodes=16,
             max_nodes=2500,
         ),
+        "graph": GraphConfig(radius_pixels=4.0),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -110,6 +113,7 @@ SCENES = {
             min_nodes=32,
             max_nodes=2500,
         ),
+        "graph": GraphConfig(radius_pixels=4.0),
         "training": TrainingConfig(
             hidden_channels=32,
             heads=4,
@@ -235,13 +239,39 @@ plt.show()
 """
     ),
     markdown_cell(
-        """## Block 5. Patch-to-Graph Conversion and GAT Training
+        """## Block 5. Graph Receptive-Field Sweep
 
-Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from `radius_graph(r=2)`, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+Compare `radius_graph` radius and GAT layer count on the same DRUID patch set. This helps decide whether wider context should come from larger local neighborhoods, deeper message passing, or both.
 """
     ),
     code_cell(
-        """graph_builder = GraphBuilder(GraphConfig(radius_pixels=2.0))
+        """if SCENE_MODE == "batch_demo":
+    graph_sweep_table = graph_receptive_field_sweep(
+        scene=scene,
+        gt_count_map=gt_count_map,
+        clusters=cluster_store.clusters,
+        radius_values=[2.0, 4.0, 6.0],
+        layer_values=[2, 3],
+        base_training_config=ACTIVE["training"],
+        device=DEVICE,
+        base_graph_config=ACTIVE["graph"],
+        seed=SEED,
+    )
+    graph_sweep_table.to_csv(scene_output_dir / "graph_receptive_field_sweep.csv", index=False)
+    display(graph_sweep_table)
+else:
+    graph_sweep_table = pd.DataFrame()
+    print("graph receptive-field sweep skipped outside batch_demo mode.")
+"""
+    ),
+    markdown_cell(
+        """## Block 6. Patch-to-Graph Conversion and GAT Training
+
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+"""
+    ),
+    code_cell(
+        """graph_builder = GraphBuilder(ACTIVE["graph"])
 graphs = graph_builder.build(cluster_store.clusters)
 
 print(f"graph_count={len(graphs)}")
@@ -263,7 +293,7 @@ display(history)
 """
     ),
     markdown_cell(
-        """## Block 6. Cluster Inference and Lifetime-Weighted Scene Merge
+        """## Block 7. Cluster Inference and Lifetime-Weighted Scene Merge
 
 Predict each cluster graph, map predictions back to the original pixel grid, and combine overlaps by lifetime-weighted averaging. The result is saved as a geocoded GeoTIFF on the same grid as the input scene.
 """

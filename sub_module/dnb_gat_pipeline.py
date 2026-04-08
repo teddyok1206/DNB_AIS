@@ -651,6 +651,119 @@ def area_limit_sweep(
     return pd.DataFrame(rows).sort_values("area_limit").reset_index(drop=True)
 
 
+def graph_receptive_field_sweep(
+    scene: SceneRaster,
+    gt_count_map: np.ndarray,
+    clusters: Iterable[DruidCluster],
+    radius_values: Iterable[float],
+    layer_values: Iterable[int],
+    base_training_config: TrainingConfig,
+    device: torch.device,
+    *,
+    base_graph_config: GraphConfig | None = None,
+    seed: int = 1,
+) -> pd.DataFrame:
+    cluster_list = list(clusters)
+    if not cluster_list:
+        raise ValueError("No clusters supplied for graph receptive field sweep.")
+
+    if base_graph_config is None:
+        base_graph_config = GraphConfig()
+
+    gt_scene_positive = int((gt_count_map > 0).sum())
+    scene_positive_mask = gt_count_map > 0
+    rows: list[dict[str, Any]] = []
+
+    for radius in radius_values:
+        graph_config = replace(base_graph_config, radius_pixels=float(radius))
+        graphs = GraphBuilder(graph_config).build(cluster_list)
+        total_nodes = int(sum(int(graph.num_nodes) for graph in graphs))
+        total_edges = int(sum(int(graph.edge_index.shape[1]) for graph in graphs))
+        all_y = torch.cat([graph.y for graph in graphs]).cpu().numpy()
+        positive_mask = all_y > 0
+        positive_count = int(positive_mask.sum())
+
+        for num_layers in layer_values:
+            np.random.seed(seed)
+            torch.manual_seed(seed)
+
+            training_config = replace(base_training_config, num_layers=int(num_layers))
+            model = GATDensityRegressor(
+                in_channels=3,
+                hidden_channels=training_config.hidden_channels,
+                heads=training_config.heads,
+                num_layers=training_config.num_layers,
+                dropout=training_config.dropout,
+            )
+
+            history = train_gat(model, graphs, device, training_config)
+            predictions = predict_graphs(model, graphs, device)
+            all_pred = np.concatenate(
+                [
+                    predictions[int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0])]
+                    for graph in graphs
+                ]
+            )
+
+            gt_node_pred_mean = float(all_pred[positive_mask].mean()) if positive_count else 0.0
+            bg_node_pred_mean = float(all_pred[~positive_mask].mean()) if (~positive_mask).any() else 0.0
+            gt_bg_ratio = float(gt_node_pred_mean / max(bg_node_pred_mean, 1.0e-6))
+
+            graph_topk_hits = 0
+            if positive_count > 0:
+                top_idx = np.argpartition(all_pred, -positive_count)[-positive_count:]
+                graph_topk_hits = int((all_y[top_idx] > 0).sum())
+
+            assembler = SceneAssembler(scene)
+            for cluster in cluster_list:
+                assembler.accumulate(cluster, predictions[cluster.cluster_id])
+            heatmap = assembler.finalize()
+
+            scene_topk_hits = 0
+            if gt_scene_positive > 0 and np.any(heatmap > 0):
+                flat_heatmap = heatmap.reshape(-1)
+                top_scene_idx = np.argpartition(flat_heatmap, -gt_scene_positive)[-gt_scene_positive:]
+                scene_topk_hits = int(scene_positive_mask.reshape(-1)[top_scene_idx].sum())
+
+            heatmap_gt_mean = float(heatmap[scene_positive_mask].mean()) if gt_scene_positive else 0.0
+            heatmap_bg_mean = float(heatmap[~scene_positive_mask].mean()) if (~scene_positive_mask).any() else 0.0
+
+            rows.append(
+                {
+                    "radius_pixels": float(radius),
+                    "num_layers": int(num_layers),
+                    "graph_count": int(len(graphs)),
+                    "total_nodes": total_nodes,
+                    "total_edges": total_edges,
+                    "mean_edges_per_node": float(total_edges / max(total_nodes, 1)),
+                    "positive_graph_nodes": positive_count,
+                    "final_train_mse": float(history["train_mse"].iloc[-1]),
+                    "graph_topk_hits": graph_topk_hits,
+                    "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
+                    "gt_node_pred_mean": gt_node_pred_mean,
+                    "bg_node_pred_mean": bg_node_pred_mean,
+                    "gt_bg_ratio": gt_bg_ratio,
+                    "pred_sum_graph_nodes": float(all_pred.sum()),
+                    "gt_sum_graph_nodes": float(all_y.sum()),
+                    "pred_sum_ratio": float(all_pred.sum() / max(float(all_y.sum()), 1.0e-6)),
+                    "scene_topk_hits": scene_topk_hits,
+                    "scene_topk_hit_rate": float(scene_topk_hits / max(gt_scene_positive, 1)),
+                    "heatmap_nonzero_pixels": int((heatmap > 0).sum()),
+                    "heatmap_max": float(heatmap.max()),
+                    "heatmap_mean": float(heatmap.mean()),
+                    "heatmap_sum": float(heatmap.sum()),
+                    "heatmap_gt_mean": heatmap_gt_mean,
+                    "heatmap_bg_mean": heatmap_bg_mean,
+                }
+            )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(["scene_topk_hit_rate", "graph_topk_hit_rate", "gt_bg_ratio"], ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 class GraphBuilder:
     def __init__(self, config: GraphConfig) -> None:
         self.config = config
