@@ -250,22 +250,6 @@ class DruidConfig:
 class GraphConfig:
     radius_pixels: float = 2.0
     normalize_coordinates: bool = True
-    brightness_mode: str = "compressed"
-
-
-ARCTAN_COMPRESS_SCALE = 1.0e-9
-
-
-def reverse_arctan_brightness(unit_interval_values: np.ndarray | torch.Tensor) -> np.ndarray | torch.Tensor:
-    clip_max = 1.0 - 1.0e-6
-    if isinstance(unit_interval_values, torch.Tensor):
-        clipped = torch.clamp(unit_interval_values, min=0.0, max=clip_max)
-        return float(ARCTAN_COMPRESS_SCALE) * torch.tan((math.pi / 2.0) * clipped)
-
-    values = np.asarray(unit_interval_values, dtype=np.float32)
-    clipped = np.clip(values, 0.0, clip_max)
-    restored = float(ARCTAN_COMPRESS_SCALE) * np.tan((math.pi / 2.0) * clipped)
-    return restored.astype(np.float32, copy=False)
 
 
 @dataclass
@@ -1314,11 +1298,6 @@ class GraphBuilder:
     def cluster_to_data(self, cluster: DruidCluster) -> Data:
         local_rc = cluster.local_rc.astype(np.float32)
         brightness = cluster.patch_image[cluster.local_rc[:, 0], cluster.local_rc[:, 1]].astype(np.float32)
-        brightness_mode = str(self.config.brightness_mode).lower()
-        if brightness_mode == "reverse_arctan_raw":
-            brightness = reverse_arctan_brightness(brightness).astype(np.float32, copy=False)
-        elif brightness_mode != "compressed":
-            raise ValueError(f"Unsupported brightness_mode: {self.config.brightness_mode}")
         gt_values = cluster.patch_gt[cluster.local_rc[:, 0], cluster.local_rc[:, 1]].astype(np.float32)
 
         x_coords = local_rc[:, 1].copy()
