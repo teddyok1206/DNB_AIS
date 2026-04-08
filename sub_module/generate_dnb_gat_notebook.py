@@ -1,0 +1,309 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+def markdown_cell(source: str) -> dict:
+    return {
+        "cell_type": "markdown",
+        "metadata": {},
+        "source": source.splitlines(keepends=True),
+    }
+
+
+def code_cell(source: str) -> dict:
+    return {
+        "cell_type": "code",
+        "execution_count": None,
+        "metadata": {},
+        "outputs": [],
+        "source": source.splitlines(keepends=True),
+    }
+
+
+NOTEBOOK_CELLS = [
+    markdown_cell(
+        """# DNB_GAT_v1
+
+## Pipeline Blocks
+- Block 1. Runtime, paths, and MPS/PyG setup
+- Block 2. Scene loading and GT density map preparation
+- Block 3. DRUID-based irregular contour patch extraction
+- Block 4. Patch-to-graph conversion with PyG `radius_graph`
+- Block 5. GATv2Conv density regression and minimal training loop
+- Block 6. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+
+## Notes
+- Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
+- Switch `SCENE_MODE` to `kr_full_scene` to run the same pipeline on the larger pseudo full-scene TIFF.
+- Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
+"""
+    ),
+    code_cell(
+        """from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+from IPython.display import display
+
+from sub_module.dnb_gat_pipeline import (
+    DruidClusterStore,
+    DruidConfig,
+    GATDensityRegressor,
+    GraphBuilder,
+    GraphConfig,
+    GroundTruthResolver,
+    SceneAssembler,
+    SceneRaster,
+    TrainingConfig,
+    make_overlay_rgb,
+    predict_graphs,
+    resolve_device,
+    train_gat,
+)
+
+ROOT = Path.cwd()
+STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
+OUTPUT_ROOT = ROOT / "outputs" / "DNB_GAT_v1"
+OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+SCENES = {
+    "batch_demo": {
+        "scene_tif": STEP3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_batch_1.tif",
+        "gt_geojson": STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson",
+        "druid": DruidConfig(
+            cutup=False,
+            area_limit=1,
+            max_catalogue_clusters=24,
+            min_nodes=16,
+            max_nodes=2500,
+        ),
+        "training": TrainingConfig(
+            hidden_channels=32,
+            heads=4,
+            num_layers=3,
+            epochs=4,
+            batch_size=4,
+            dropout=0.05,
+            positive_weight=12.0,
+        ),
+    },
+    "kr_full_scene": {
+        "scene_tif": STEP3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_KR.tif",
+        "gt_geojson": STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson",
+        "druid": DruidConfig(
+            cutup=True,
+            cutup_size=512,
+            cutup_buffer=64,
+            area_limit=4,
+            max_catalogue_clusters=48,
+            min_nodes=32,
+            max_nodes=2500,
+        ),
+        "training": TrainingConfig(
+            hidden_channels=32,
+            heads=4,
+            num_layers=3,
+            epochs=4,
+            batch_size=4,
+            dropout=0.05,
+            positive_weight=12.0,
+        ),
+    },
+}
+
+SCENE_MODE = "batch_demo"
+ACTIVE = SCENES[SCENE_MODE]
+DEVICE = resolve_device("mps")
+
+print(f"SCENE_MODE={SCENE_MODE}")
+print(f"DEVICE={DEVICE}")
+print(f"MPS available={torch.backends.mps.is_available()}")
+print(f"Scene path={ACTIVE['scene_tif']}")
+"""
+    ),
+    markdown_cell(
+        """## Block 2. Scene Loading and GT Density Map Preparation
+
+Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center counts onto the scene grid. The count map is the node-level regression target before DRUID patching.
+"""
+    ),
+    code_cell(
+        """scene = SceneRaster.load(ACTIVE["scene_tif"])
+scene_output_dir = OUTPUT_ROOT / scene.key / SCENE_MODE
+scene_output_dir.mkdir(parents=True, exist_ok=True)
+
+gt_resolver = GroundTruthResolver(
+    metadata_csv=STEP3 / "metadata_JPSS-2.csv",
+    ships_db_path=Path("/Users/jungtaeuk/ships/ships.db"),
+    default_geojson_dir=STEP3 / "bboxes_JPSS-2",
+)
+
+gt_geojson_path = gt_resolver.resolve_geojson(scene, ACTIVE["gt_geojson"])
+gt_points = gt_resolver.load_points(gt_geojson_path)
+gt_count_map = gt_resolver.rasterize_counts(scene, gt_points)
+
+print(f"scene.key={scene.key}")
+print(f"scene.shape={scene.shape}")
+print(f"gt_geojson_path={gt_geojson_path}")
+print(f"gt_points={len(gt_points)}")
+print(f"gt_nonzero_pixels={(gt_count_map > 0).sum()}")
+print(f"gt_total_count={gt_count_map.sum():.0f}")
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+axes[0].imshow(scene.image, cmap="cividis", vmin=0, vmax=1)
+axes[0].set_title(f"Scene Radiance: {scene.path.name}")
+axes[0].set_axis_off()
+
+axes[1].imshow(gt_count_map, cmap="inferno")
+axes[1].set_title("GT Count Map (ship-center raster)")
+axes[1].set_axis_off()
+plt.tight_layout()
+plt.show()
+"""
+    ),
+    markdown_cell(
+        """## Block 3. DRUID-Based Irregular Contour Patch Extraction
+
+Run DRUID, keep cluster lifetime values, reconstruct contour masks, filter nested clusters, and summarize patch sizes. This is the state-carrying class layer that will also support later DRUID refinement work.
+"""
+    ),
+    code_cell(
+        """cluster_store = DruidClusterStore.from_scene(
+    scene=scene,
+    gt_count_map=gt_count_map,
+    druid_root=STEP3 / "DRUID",
+    config=ACTIVE["druid"],
+)
+
+cluster_summary = cluster_store.summary_frame()
+cluster_summary.to_csv(scene_output_dir / "cluster_summary.csv", index=False)
+
+print(f"clusters_after_filter={len(cluster_store.clusters)}")
+print("patch_size_suggestions=", cluster_store.patch_size_suggestions())
+display(cluster_summary.head(10))
+
+sample_cluster = cluster_store.clusters[0]
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+axes[0].imshow(sample_cluster.patch_image, cmap="cividis", vmin=0, vmax=1)
+axes[0].set_title(f"Cluster {sample_cluster.cluster_id} patch")
+axes[0].set_axis_off()
+
+axes[1].imshow(sample_cluster.mask, cmap="gray")
+axes[1].set_title("Irregular contour mask")
+axes[1].set_axis_off()
+
+axes[2].imshow(sample_cluster.patch_gt, cmap="magma")
+axes[2].set_title("Patch GT count")
+axes[2].set_axis_off()
+plt.tight_layout()
+plt.show()
+"""
+    ),
+    markdown_cell(
+        """## Block 4. Patch-to-Graph Conversion and GAT Training
+
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from `radius_graph(r=2)`, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
+"""
+    ),
+    code_cell(
+        """graph_builder = GraphBuilder(GraphConfig(radius_pixels=2.0))
+graphs = graph_builder.build(cluster_store.clusters)
+
+print(f"graph_count={len(graphs)}")
+print(f"total_nodes={sum(int(graph.num_nodes) for graph in graphs)}")
+print(f"first_graph_nodes={graphs[0].num_nodes}")
+print(f"first_graph_edges={graphs[0].edge_index.shape[1]}")
+
+model = GATDensityRegressor(
+    in_channels=3,
+    hidden_channels=ACTIVE["training"].hidden_channels,
+    heads=ACTIVE["training"].heads,
+    num_layers=ACTIVE["training"].num_layers,
+    dropout=ACTIVE["training"].dropout,
+)
+
+history = train_gat(model, graphs, DEVICE, ACTIVE["training"])
+history.to_csv(scene_output_dir / "training_history.csv", index=False)
+display(history)
+"""
+    ),
+    markdown_cell(
+        """## Block 5. Cluster Inference and Lifetime-Weighted Scene Merge
+
+Predict each cluster graph, map predictions back to the original pixel grid, and combine overlaps by lifetime-weighted averaging. The result is saved as a geocoded GeoTIFF on the same grid as the input scene.
+"""
+    ),
+    code_cell(
+        """predictions = predict_graphs(model, graphs, DEVICE)
+assembler = SceneAssembler(scene)
+for cluster in cluster_store.clusters:
+    assembler.accumulate(cluster, predictions[cluster.cluster_id])
+
+heatmap = assembler.finalize()
+heatmap_path = assembler.save_geotiff(
+    scene_output_dir / f"{scene.key}_gat_density_heatmap.tif",
+    heatmap,
+)
+
+overlay_rgb = make_overlay_rgb(scene.image, heatmap)
+
+fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+axes[0, 0].imshow(scene.image, cmap="cividis", vmin=0, vmax=1)
+axes[0, 0].set_title("Scene radiance")
+axes[0, 0].set_axis_off()
+
+axes[0, 1].imshow(gt_count_map, cmap="inferno")
+axes[0, 1].set_title("GT count map")
+axes[0, 1].set_axis_off()
+
+axes[1, 0].imshow(heatmap, cmap="magma")
+axes[1, 0].set_title("Predicted density heatmap")
+axes[1, 0].set_axis_off()
+
+axes[1, 1].imshow(overlay_rgb)
+axes[1, 1].set_title("Radiance + predicted heatmap overlay")
+axes[1, 1].set_axis_off()
+plt.tight_layout()
+plt.show()
+
+print(f"heatmap_path={heatmap_path}")
+print(f"heatmap_nonzero_pixels={(heatmap > 0).sum()}")
+print(f"heatmap_min={heatmap.min():.6f}")
+print(f"heatmap_max={heatmap.max():.6f}")
+print(f"heatmap_mean={heatmap.mean():.6f}")
+"""
+    ),
+]
+
+
+NOTEBOOK = {
+    "cells": NOTEBOOK_CELLS,
+    "metadata": {
+        "kernelspec": {
+            "display_name": "Python (DNB_AIS)",
+            "language": "python",
+            "name": "python3",
+        },
+        "language_info": {
+            "name": "python",
+            "version": "3.14",
+        },
+    },
+    "nbformat": 4,
+    "nbformat_minor": 5,
+}
+
+
+def main() -> None:
+    root = Path(__file__).resolve().parents[1]
+    notebook_path = root / "DNB_GAT_v1.ipynb"
+    notebook_path.write_text(json.dumps(NOTEBOOK, ensure_ascii=False, indent=2))
+    print(notebook_path)
+
+
+if __name__ == "__main__":
+    main()
