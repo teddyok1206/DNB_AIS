@@ -29,15 +29,17 @@ NOTEBOOK_CELLS = [
 ## Pipeline Blocks
 - Block 1. Runtime, paths, and MPS/PyG setup
 - Block 2. Scene loading and GT density map preparation
-- Block 3. DRUID-based irregular contour patch extraction
-- Block 4. Patch-to-graph conversion with PyG `radius_graph`
-- Block 5. GATv2Conv density regression and minimal training loop
-- Block 6. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
+- Block 3. DRUID `area_limit` sweep for patch-size diagnostics
+- Block 4. DRUID-based irregular contour patch extraction
+- Block 5. Patch-to-graph conversion with PyG `radius_graph`
+- Block 6. GATv2Conv density regression and minimal training loop
+- Block 7. Lifetime-weighted patch merge to geocoded heatmap GeoTIFF
 
 ## Notes
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
 - Switch `SCENE_MODE` to `kr_full_scene` to run the same pipeline on the larger pseudo full-scene TIFF.
 - Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
+- `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 """
     ),
     code_cell(
@@ -59,6 +61,7 @@ from sub_module.dnb_gat_pipeline import (
     SceneAssembler,
     SceneRaster,
     TrainingConfig,
+    area_limit_sweep,
     make_overlay_rgb,
     predict_graphs,
     resolve_device,
@@ -69,6 +72,10 @@ ROOT = Path.cwd()
 STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
 OUTPUT_ROOT = ROOT / "outputs" / "DNB_GAT_v1"
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+SEED = 1
+
+np.random.seed(SEED)
+torch.manual_seed(SEED)
 
 SCENES = {
     "batch_demo": {
@@ -76,8 +83,8 @@ SCENES = {
         "gt_geojson": STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson",
         "druid": DruidConfig(
             cutup=False,
-            area_limit=1,
-            max_catalogue_clusters=24,
+            area_limit=12,
+            max_catalogue_clusters=None,
             min_nodes=16,
             max_nodes=2500,
         ),
@@ -98,8 +105,8 @@ SCENES = {
             cutup=True,
             cutup_size=512,
             cutup_buffer=64,
-            area_limit=4,
-            max_catalogue_clusters=48,
+            area_limit=12,
+            max_catalogue_clusters=None,
             min_nodes=32,
             max_nodes=2500,
         ),
@@ -121,6 +128,7 @@ DEVICE = resolve_device("mps")
 
 print(f"SCENE_MODE={SCENE_MODE}")
 print(f"DEVICE={DEVICE}")
+print(f"SEED={SEED}")
 print(f"MPS available={torch.backends.mps.is_available()}")
 print(f"Scene path={ACTIVE['scene_tif']}")
 """
@@ -166,7 +174,30 @@ plt.show()
 """
     ),
     markdown_cell(
-        """## Block 3. DRUID-Based Irregular Contour Patch Extraction
+        """## Block 3. DRUID `area_limit` Sweep for Patch-Size Diagnostics
+
+Run a sweep over candidate `area_limit` values with `min_nodes=1` and no top-k cap, so the report is driven by DRUID patch size rather than the later graph-size threshold. This block is only enabled for `batch_demo`.
+"""
+    ),
+    code_cell(
+        """if SCENE_MODE == "batch_demo":
+    area_limit_table = area_limit_sweep(
+        scene=scene,
+        gt_count_map=gt_count_map,
+        druid_root=STEP3 / "DRUID",
+        area_limits=[4, 8, 12, 16],
+        base_config=ACTIVE["druid"],
+        min_nodes_override=1,
+    )
+    area_limit_table.to_csv(scene_output_dir / "area_limit_sweep.csv", index=False)
+    display(area_limit_table)
+else:
+    area_limit_table = pd.DataFrame()
+    print("area_limit sweep skipped outside batch_demo mode.")
+"""
+    ),
+    markdown_cell(
+        """## Block 4. DRUID-Based Irregular Contour Patch Extraction
 
 Run DRUID, keep cluster lifetime values, reconstruct contour masks, filter nested clusters, and summarize patch sizes. This is the state-carrying class layer that will also support later DRUID refinement work.
 """
@@ -204,7 +235,7 @@ plt.show()
 """
     ),
     markdown_cell(
-        """## Block 4. Patch-to-Graph Conversion and GAT Training
+        """## Block 5. Patch-to-Graph Conversion and GAT Training
 
 Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from `radius_graph(r=2)`, and the target is the per-pixel ship count. The model output is a non-negative density estimate via ReLU.
 """
@@ -232,7 +263,7 @@ display(history)
 """
     ),
     markdown_cell(
-        """## Block 5. Cluster Inference and Lifetime-Weighted Scene Merge
+        """## Block 6. Cluster Inference and Lifetime-Weighted Scene Merge
 
 Predict each cluster graph, map predictions back to the original pixel grid, and combine overlaps by lifetime-weighted averaging. The result is saved as a geocoded GeoTIFF on the same grid as the input scene.
 """

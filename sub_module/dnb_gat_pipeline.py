@@ -7,7 +7,7 @@ import re
 import sqlite3
 import sys
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -193,7 +193,7 @@ class DruidConfig:
     cutup_size: int = 512
     cutup_buffer: int = 64
     smooth_sigma: float = 0.0
-    max_catalogue_clusters: int | None = 32
+    max_catalogue_clusters: int | None = None
     min_nodes: int = 32
     max_nodes: int = 4096
     remove_edge: bool = True
@@ -441,14 +441,17 @@ class DruidClusterStore:
         if config.max_catalogue_clusters is not None:
             base_catalogue = base_catalogue.head(config.max_catalogue_clusters).copy()
 
-        contour_catalogue = DruidClusterStore._attach_contours(scene.image, base_catalogue)
+        contour_catalogue = DruidClusterStore._attach_contours(
+            np.asarray(finder.image_smooth, dtype=np.float32),
+            base_catalogue,
+        )
         return contour_catalogue.sort_values("lifetime", ascending=False).reset_index(drop=True)
 
     @staticmethod
-    def _attach_contours(scene_image: np.ndarray, catalogue: pd.DataFrame) -> pd.DataFrame:
+    def _attach_contours(membership_image: np.ndarray, catalogue: pd.DataFrame) -> pd.DataFrame:
         contour_rows: list[dict[str, Any]] = []
         for row in catalogue.itertuples(index=False):
-            contour = DruidClusterStore._contour_from_catalogue_row(scene_image, row)
+            contour = DruidClusterStore._contour_from_catalogue_row(membership_image, row)
             if contour is None or contour.shape[0] < 3:
                 continue
             row_dict = dict(row._asdict())
@@ -457,12 +460,12 @@ class DruidClusterStore:
         return pd.DataFrame(contour_rows)
 
     @staticmethod
-    def _contour_from_catalogue_row(scene_image: np.ndarray, row: Any) -> np.ndarray | None:
+    def _contour_from_catalogue_row(membership_image: np.ndarray, row: Any) -> np.ndarray | None:
         bbox1 = int(max(row.bbox1 - 1, 0))
         bbox2 = int(max(row.bbox2 - 1, 0))
-        bbox3 = int(min(row.bbox3 + 1, scene_image.shape[0] - 1))
-        bbox4 = int(min(row.bbox4 + 1, scene_image.shape[1] - 1))
-        cropped = scene_image[bbox1 : bbox3 + 1, bbox2 : bbox4 + 1]
+        bbox3 = int(min(row.bbox3 + 1, membership_image.shape[0] - 1))
+        bbox4 = int(min(row.bbox4 + 1, membership_image.shape[1] - 1))
+        cropped = membership_image[bbox1 : bbox3 + 1, bbox2 : bbox4 + 1]
         if cropped.size == 0:
             return None
 
@@ -572,6 +575,80 @@ class DruidClusterStore:
             "recommended_median_nodes": int(summary["node_count"].quantile(0.50)),
             "recommended_max_nodes": int(summary["node_count"].quantile(0.90)),
         }
+
+
+def area_limit_sweep(
+    scene: SceneRaster,
+    gt_count_map: np.ndarray,
+    druid_root: str | Path,
+    area_limits: Iterable[int],
+    base_config: DruidConfig,
+    *,
+    min_nodes_override: int = 1,
+    max_nodes_override: int | None = None,
+) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    gt_nonzero = int((gt_count_map > 0).sum())
+
+    for area_limit in area_limits:
+        config = replace(
+            base_config,
+            area_limit=int(area_limit),
+            max_catalogue_clusters=None,
+            min_nodes=int(min_nodes_override),
+            max_nodes=int(max_nodes_override if max_nodes_override is not None else base_config.max_nodes),
+        )
+        catalogue = DruidClusterStore._run_druid(scene, druid_root, config)
+        clusters = _drop_nested_clusters(DruidClusterStore._build_clusters(scene, gt_count_map, catalogue, config))
+
+        covered = np.zeros(scene.shape, dtype=np.uint8)
+        for cluster in clusters:
+            covered[cluster.global_rc[:, 0], cluster.global_rc[:, 1]] = 1
+
+        node_counts = np.array([cluster.node_count for cluster in clusters], dtype=np.int32)
+        clusters_with_gt = int(sum(cluster.gt_sum > 0 for cluster in clusters))
+        unique_gt_pixels_covered = int(((gt_count_map > 0) & (covered > 0)).sum())
+
+        if node_counts.size == 0:
+            node_stats = {
+                "node_count_min": 0,
+                "node_count_p25": 0,
+                "node_count_median": 0,
+                "node_count_p75": 0,
+                "node_count_p90": 0,
+                "node_count_max": 0,
+                "clusters_lt8": 0,
+                "clusters_lt16": 0,
+                "clusters_lt32": 0,
+            }
+        else:
+            node_stats = {
+                "node_count_min": int(node_counts.min()),
+                "node_count_p25": int(np.quantile(node_counts, 0.25)),
+                "node_count_median": int(np.quantile(node_counts, 0.50)),
+                "node_count_p75": int(np.quantile(node_counts, 0.75)),
+                "node_count_p90": int(np.quantile(node_counts, 0.90)),
+                "node_count_max": int(node_counts.max()),
+                "clusters_lt8": int((node_counts < 8).sum()),
+                "clusters_lt16": int((node_counts < 16).sum()),
+                "clusters_lt32": int((node_counts < 32).sum()),
+            }
+
+        rows.append(
+            {
+                "area_limit": int(area_limit),
+                "min_nodes_used": int(config.min_nodes),
+                "druid_catalogue_count": int(len(catalogue)),
+                "final_cluster_count": int(len(clusters)),
+                "total_nodes": int(node_counts.sum()) if node_counts.size else 0,
+                "clusters_with_gt": clusters_with_gt,
+                "gt_pixels_covered": unique_gt_pixels_covered,
+                "gt_pixel_coverage_ratio": float(unique_gt_pixels_covered / max(gt_nonzero, 1)),
+                **node_stats,
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values("area_limit").reset_index(drop=True)
 
 
 class GraphBuilder:

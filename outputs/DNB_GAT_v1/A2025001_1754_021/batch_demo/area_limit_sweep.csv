@@ -1,0 +1,5 @@
+area_limit,min_nodes_used,druid_catalogue_count,final_cluster_count,total_nodes,clusters_with_gt,gt_pixels_covered,gt_pixel_coverage_ratio,node_count_min,node_count_p25,node_count_median,node_count_p75,node_count_p90,node_count_max,clusters_lt8,clusters_lt16,clusters_lt32
+4,1,396,279,7809,34,78,0.5864661654135338,3,8,14,28,56,449,60,153,217
+8,1,269,195,7087,30,77,0.5789473684210527,8,13,19,38,70,449,0,73,137
+12,1,201,155,6784,30,76,0.5714285714285714,9,16,24,44,80,449,0,30,95
+16,1,145,110,5893,25,74,0.556390977443609,17,23,34,51,88,449,0,0,54
