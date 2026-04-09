@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 20
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 11:22 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. graph supervision의 `y_edge_decay`는 이제 source별 hop kernel을 정규화해 총합이 원본 척수와 같게 보존되는 sum-preserving target이다. 따라서 graph 내부 target 합은 다시 `척` 해석과 연결된다. batch_demo 검증에서 `raw_graph_sum=80.0`, `edge_graph_sum≈80.0`으로 일치했다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- `y_edge_decay`를 sum-preserving 방식으로 바꿨다. graph block에서 raw GT 합과 edge-decay 합을 같이 출력하도록 notebook을 갱신했고, batch_demo 검증 스크립트도 추가했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 현재 `DNB_AIS` 환경에서 MPS가 잡히지 않아 메인 학습/추론 재실행은 못 했다. CPU fallback은 사용자 지시에 따라 사용하지 않았다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- MPS 복구 후 sum-preserving GT 기준 batch_demo 재학습 및 척수 해석 검증
+
 ## Entry 19
 
 1. 업데이트 날짜, 시각

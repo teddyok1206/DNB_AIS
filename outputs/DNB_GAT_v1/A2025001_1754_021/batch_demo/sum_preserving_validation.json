@@ -1,0 +1,106 @@
+{
+  "scene_key": "A2025001_1754_021",
+  "device": "cpu",
+  "graph_count": 125,
+  "raw_scene_sum": 160.0,
+  "raw_graph_sum": 80.0,
+  "edge_graph_sum": 79.99999988079071,
+  "max_abs_graph_diff": 2.384185791015625e-07,
+  "pred_graph_sum": null,
+  "heatmap_sum": null,
+  "heatmap_max": null,
+  "heatmap_mean": null,
+  "pred_graph_to_raw_ratio": null,
+  "heatmap_to_raw_ratio": null,
+  "training_skipped": true,
+  "graph_config": {
+    "radius_pixels": 4.0,
+    "normalize_coordinates": true,
+    "make_undirected": true,
+    "gt_smoothing_hop_weights": [
+      1.0,
+      0.6,
+      0.2
+    ],
+    "gt_smoothing_preserve_mass": true
+  },
+  "training_config": {
+    "hidden_channels": 32,
+    "heads": 4,
+    "num_layers": 3,
+    "dropout": 0.05,
+    "output_activation": "softplus",
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "epochs": 4,
+    "batch_size": 4,
+    "loss_name": "poisson_nll",
+    "positive_weight": 12.0,
+    "count_weight_alpha": 20.0,
+    "count_sum_lambda": 0.0,
+    "target_scale": 1.0,
+    "target_field": "y_edge_decay"
+  },
+  "largest_positive_graph_diffs": [
+    {
+      "cluster_id": 611,
+      "raw_sum": 2.0,
+      "edge_sum": 2.000000238418579,
+      "diff": 2.384185791015625e-07
+    },
+    {
+      "cluster_id": 44,
+      "raw_sum": 3.0,
+      "edge_sum": 2.999999761581421,
+      "diff": -2.384185791015625e-07
+    },
+    {
+      "cluster_id": 56,
+      "raw_sum": 2.0,
+      "edge_sum": 1.9999998807907104,
+      "diff": -1.1920928955078125e-07
+    },
+    {
+      "cluster_id": 2,
+      "raw_sum": 1.0,
+      "edge_sum": 1.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 3,
+      "raw_sum": 1.0,
+      "edge_sum": 1.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 4,
+      "raw_sum": 1.0,
+      "edge_sum": 1.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 5,
+      "raw_sum": 1.0,
+      "edge_sum": 1.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 9,
+      "raw_sum": 10.0,
+      "edge_sum": 10.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 612,
+      "raw_sum": 1.0,
+      "edge_sum": 1.0,
+      "diff": 0.0
+    },
+    {
+      "cluster_id": 11,
+      "raw_sum": 17.0,
+      "edge_sum": 17.0,
+      "diff": 0.0
+    }
+  ]
+}

@@ -254,6 +254,7 @@ class GraphConfig:
     normalize_coordinates: bool = True
     make_undirected: bool = True
     gt_smoothing_hop_weights: tuple[float, ...] | None = (1.0, 0.6, 0.2)
+    gt_smoothing_preserve_mass: bool = True
 
 
 @dataclass
@@ -1235,13 +1236,15 @@ def visualize_graph_cluster(
     edge_index = graph.edge_index.detach().cpu().numpy()
     brightness = graph.x[:, 0].detach().cpu().numpy()
     gt_values = graph.y.detach().cpu().numpy()
+    gt_edge_decay = graph.y_edge_decay.detach().cpu().numpy() if hasattr(graph, "y_edge_decay") else None
 
     segments = np.stack([pos[edge_index[0]], pos[edge_index[1]]], axis=1) if edge_index.size else np.empty((0, 2, 2))
     if segments.shape[0] > max_edges_to_draw:
         stride = max(int(math.ceil(segments.shape[0] / max_edges_to_draw)), 1)
         segments = segments[::stride]
 
-    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    num_panels = 5 if gt_edge_decay is not None else 4
+    fig, axes = plt.subplots(1, num_panels, figsize=(5 * num_panels, 5))
 
     axes[0].imshow(cluster.patch_image, cmap="cividis")
     axes[0].contour(cluster.mask.astype(float), levels=[0.5], colors="cyan", linewidths=1.0)
@@ -1285,9 +1288,27 @@ def visualize_graph_cluster(
     axes[2].set_aspect("equal")
     fig.colorbar(gt_scatter, ax=axes[2], fraction=0.046, pad=0.04)
 
+    pred_axis_idx = 3
+    if gt_edge_decay is not None:
+        decay_scatter = axes[3].scatter(
+            pos[:, 0],
+            pos[:, 1],
+            c=gt_edge_decay,
+            cmap="plasma",
+            s=16,
+            vmin=0.0,
+            vmax=max(float(np.max(gt_edge_decay)), 1.0e-6),
+        )
+        axes[3].set_title(f"Node GT edge-decay\nsum={float(np.sum(gt_edge_decay)):.2f}")
+        axes[3].set_xlim(-0.5, cluster.bbox_width - 0.5)
+        axes[3].set_ylim(cluster.bbox_height - 0.5, -0.5)
+        axes[3].set_aspect("equal")
+        fig.colorbar(decay_scatter, ax=axes[3], fraction=0.046, pad=0.04)
+        pred_axis_idx = 4
+
     pred_panel = pred_values if pred_values is not None else brightness
     pred_label = "Node predictions" if pred_values is not None else "Node brightness"
-    pred_scatter = axes[3].scatter(
+    pred_scatter = axes[pred_axis_idx].scatter(
         pos[:, 0],
         pos[:, 1],
         c=pred_panel,
@@ -1296,11 +1317,11 @@ def visualize_graph_cluster(
         vmin=0.0,
         vmax=max(float(np.max(pred_panel)), 1.0e-6),
     )
-    axes[3].set_title(pred_label)
-    axes[3].set_xlim(-0.5, cluster.bbox_width - 0.5)
-    axes[3].set_ylim(cluster.bbox_height - 0.5, -0.5)
-    axes[3].set_aspect("equal")
-    fig.colorbar(pred_scatter, ax=axes[3], fraction=0.046, pad=0.04)
+    axes[pred_axis_idx].set_title(pred_label)
+    axes[pred_axis_idx].set_xlim(-0.5, cluster.bbox_width - 0.5)
+    axes[pred_axis_idx].set_ylim(cluster.bbox_height - 0.5, -0.5)
+    axes[pred_axis_idx].set_aspect("equal")
+    fig.colorbar(pred_scatter, ax=axes[pred_axis_idx], fraction=0.046, pad=0.04)
 
     for ax in axes[1:]:
         ax.set_xticks([])
@@ -1315,9 +1336,13 @@ def edge_decay_smoothed_target(
     edge_index: torch.Tensor,
     num_nodes: int,
     hop_weights: tuple[float, ...],
+    *,
+    preserve_mass: bool = True,
 ) -> torch.Tensor:
     if len(hop_weights) == 0:
         raise ValueError("hop_weights must contain at least one value.")
+    if any(float(weight) < 0.0 for weight in hop_weights):
+        raise ValueError("hop_weights must be non-negative.")
 
     smoothed = np.zeros(int(num_nodes), dtype=np.float32)
     positive_nodes = np.flatnonzero(raw_target > 0)
@@ -1347,8 +1372,18 @@ def edge_decay_smoothed_target(
                 distances[neighbor] = next_hop
                 queue.append(neighbor)
 
-        for node, hop in distances.items():
-            smoothed[node] += np.float32(base_value * float(hop_weights[hop]))
+        raw_kernel = {int(node): float(hop_weights[hop]) for node, hop in distances.items()}
+        if preserve_mass:
+            kernel_total = float(sum(raw_kernel.values()))
+            if kernel_total <= 0.0:
+                raw_kernel = {int(source): 1.0}
+                kernel_total = 1.0
+            scale = base_value / kernel_total
+            for node, kernel_value in raw_kernel.items():
+                smoothed[node] += np.float32(kernel_value * scale)
+        else:
+            for node, kernel_value in raw_kernel.items():
+                smoothed[node] += np.float32(base_value * kernel_value)
 
     return torch.from_numpy(smoothed)
 
@@ -1392,6 +1427,7 @@ class GraphBuilder:
                 edge_index=edge_index,
                 num_nodes=int(pos_tensor.shape[0]),
                 hop_weights=self.config.gt_smoothing_hop_weights,
+                preserve_mass=bool(self.config.gt_smoothing_preserve_mass),
             )
         data.cluster_id = torch.tensor([cluster.cluster_id], dtype=torch.long)
         data.global_rc = torch.from_numpy(cluster.global_rc.astype(np.int64))

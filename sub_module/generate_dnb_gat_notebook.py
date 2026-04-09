@@ -45,7 +45,7 @@ NOTEBOOK_CELLS = [
 - Default mode is `batch_demo` because it is the validated end-to-end path in the current workspace.
 - Switch `SCENE_MODE` to `kr_full_scene` to run the same pipeline on the larger pseudo full-scene TIFF.
 - Ground truth uses ship-center pixels. If the requested geojson is missing, the notebook can regenerate it from `ships.db` and `metadata_JPSS-2.csv`.
-- Main graph supervision uses edge-decay GT spreading (`y_edge_decay`) so one ship-center pixel influences nearby nodes through the graph radius. Raw point GT (`y`) is still retained for comparison and diagnostics.
+- Main graph supervision uses sum-preserving edge-decay GT spreading (`y_edge_decay`) so one ship-center pixel influences nearby nodes through the graph radius while the total ship-count mass remains unchanged. Raw point GT (`y`) is still retained for comparison and diagnostics.
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 - Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
 - Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)` so ship-count targets are treated as non-negative intensity values rather than only squared-error residuals.
@@ -114,6 +114,7 @@ SCENES = {
         "graph": GraphConfig(
             radius_pixels=4.0,
             gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+            gt_smoothing_preserve_mass=True,
         ),
         "training": TrainingConfig(
             hidden_channels=32,
@@ -144,6 +145,7 @@ SCENES = {
         "graph": GraphConfig(
             radius_pixels=4.0,
             gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+            gt_smoothing_preserve_mass=True,
         ),
         "training": TrainingConfig(
             hidden_channels=32,
@@ -178,7 +180,7 @@ print(f"Scene path={ACTIVE['scene_tif']}")
     markdown_cell(
         """## Block 2. Scene Loading and GT Density Map Preparation
 
-Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center counts onto the scene grid. This raw count map is the source GT before graph-level edge-decay spreading creates `y_edge_decay`.
+Load the target GeoTIFF, resolve the GT geojson path, and rasterize ship-center counts onto the scene grid. This raw count map is the source GT before graph-level sum-preserving edge-decay spreading creates `y_edge_decay`.
 """
     ),
     code_cell(
@@ -323,6 +325,8 @@ print(f"graph_count={len(graphs)}")
 print(f"total_nodes={sum(int(graph.num_nodes) for graph in graphs)}")
 print(f"first_graph_nodes={graphs[0].num_nodes}")
 print(f"first_graph_edges={graphs[0].edge_index.shape[1]}")
+print(f"raw_gt_sum_graphs={sum(float(graph.y.sum()) for graph in graphs):.2f}")
+print(f"edge_decay_gt_sum_graphs={sum(float(graph.y_edge_decay.sum()) for graph in graphs):.2f}")
 print(
     f"representative_cluster_id={representative_cluster.cluster_id}, "
     f"gt_sum={representative_cluster.gt_sum:.1f}, "
@@ -339,7 +343,7 @@ print(f"graph_viz_path={graph_viz_path}")
     markdown_cell(
         """## Block 7. Single-Graph Overfit Troubleshooting
 
-This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch. A full `positive_weight x count_weight_alpha` sweep is included so uniform positive emphasis can be compared against target-magnitude-aware emphasis and their combinations.
+This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with sum-preserving edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch. A full `positive_weight x count_weight_alpha` sweep is included so uniform positive emphasis can be compared against target-magnitude-aware emphasis and their combinations.
 """
     ),
     code_cell(
@@ -348,6 +352,7 @@ This troubleshooting block keeps the full pipeline untouched but builds one extr
     normalize_coordinates=ACTIVE["graph"].normalize_coordinates,
     make_undirected=True,
     gt_smoothing_hop_weights=(1.0, 0.6, 0.2),
+    gt_smoothing_preserve_mass=True,
 )
 troubleshooting_graphs = GraphBuilder(troubleshooting_graph_config).build(cluster_store.clusters)
 troubleshooting_graph_map = {
@@ -521,7 +526,7 @@ else:
     markdown_cell(
         """## Block 10. Patch-to-Graph Conversion, GAT Training, and Checkpoint Export
 
-Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the default supervision target is graph-propagated `y_edge_decay`. Raw point GT is still stored as `y` for comparison. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
+Each pixel inside a DRUID contour mask becomes a node. Node features are `[brightness, local_x, local_y]`, edges come from the configured `radius_graph` radius, and the default supervision target is graph-propagated `y_edge_decay`. This target is now sum-preserving, so the total mass over a graph remains tied to the original ship-count total. Raw point GT is still stored as `y` for comparison. The default model output is a non-negative intensity estimate via `Softplus`, trained with `PoissonNLLLoss(log_input=False)`.
 """
     ),
     code_cell(
