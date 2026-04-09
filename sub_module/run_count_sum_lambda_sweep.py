@@ -78,7 +78,6 @@ def main() -> None:
         output_activation="softplus",
         loss_name="poisson_nll",
         positive_weight=0.0,
-        count_weight_alpha=0.0,
         target_field="y_edge_decay",
     )
     raw_graph_sum = float(sum(float(graph.y.sum()) for graph in graphs))

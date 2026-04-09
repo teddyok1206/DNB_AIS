@@ -126,7 +126,6 @@ SCENES = {
             output_activation="softplus",
             loss_name="poisson_nll",
             positive_weight=0.0,
-            count_weight_alpha=0.0,
             target_field="y_edge_decay",
         ),
     },
@@ -157,7 +156,6 @@ SCENES = {
             output_activation="softplus",
             loss_name="poisson_nll",
             positive_weight=0.0,
-            count_weight_alpha=0.0,
             target_field="y_edge_decay",
         ),
     },
@@ -343,7 +341,7 @@ print(f"graph_viz_path={graph_viz_path}")
     markdown_cell(
         """## Block 7. Single-Graph Overfit Troubleshooting
 
-This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with sum-preserving edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch. A full `positive_weight x count_weight_alpha` sweep is included so uniform positive emphasis can be compared against target-magnitude-aware emphasis and their combinations.
+This troubleshooting block keeps the full pipeline untouched but builds one extra graph set with sum-preserving edge-decay GT smoothing for diagnosis. The overfit test runs on one positive cluster only, with dropout and weight decay disabled, so the question is simply whether the model can drive a peak close to 1 on a single patch. Only `positive_weight` is swept here; count-magnitude weighting has been removed from the code path to keep the loss simpler.
 """
     ),
     code_cell(
@@ -395,7 +393,6 @@ overfit_configs = [
             lr=3.0e-3,
             loss_name="poisson_nll",
             positive_weight=0.0,
-            count_weight_alpha=0.0,
             target_field="y",
         ),
     ),
@@ -410,7 +407,6 @@ overfit_configs = [
             lr=3.0e-3,
             loss_name="mse",
             positive_weight=0.0,
-            count_weight_alpha=0.0,
             target_field="y",
         ),
     ),
@@ -418,30 +414,27 @@ overfit_configs = [
 
 smooth_weight_values = [0.0, 20.0, 50.0, 100.0]
 for positive_weight in smooth_weight_values:
-    for count_weight_alpha in smooth_weight_values:
-        config_name = (
-            f"smooth_mse_pw{int(positive_weight)}_cwa{int(count_weight_alpha)}"
-            if positive_weight or count_weight_alpha
-            else "smooth_mse_unweighted"
+    config_name = (
+        f"smooth_mse_pw{int(positive_weight)}"
+        if positive_weight
+        else "smooth_mse_unweighted"
+    )
+    overfit_configs.append(
+        (
+            config_name,
+            replace(
+                ACTIVE["training"],
+                epochs=1000,
+                batch_size=1,
+                dropout=0.0,
+                weight_decay=0.0,
+                lr=3.0e-3,
+                loss_name="mse",
+                positive_weight=float(positive_weight),
+                target_field="y_edge_decay",
+            ),
         )
-        overfit_configs.append(
-            (
-                config_name,
-                replace(
-                    ACTIVE["training"],
-                    epochs=1000,
-                    batch_size=1,
-                    dropout=0.0,
-                    weight_decay=0.0,
-                    lr=3.0e-3,
-                    loss_name="mse",
-                    positive_weight=float(positive_weight),
-                    count_weight_alpha=float(count_weight_alpha),
-                    target_field="y_edge_decay",
-                ),
-            )
-        )
- 
+    )
 
 overfit_table, overfit_predictions, overfit_histories = single_graph_overfit_sweep(
     troubleshooting_graph,
@@ -476,7 +469,7 @@ print(f"best_overfit_path={best_overfit_path}")
     markdown_cell(
         """## Block 8. Loss Weighting Comparison
 
-Compare several supervision variants on the same graph set. With the current default, the model uses a `Softplus` head and `PoissonNLLLoss`; the sweep keeps the count-aware weighting variants and a reference-only target scaling run so the previous MSE-family behavior can still be contrasted.
+Compare several supervision variants on the same graph set. With the current default, the model uses a `Softplus` head and `PoissonNLLLoss`; the sweep now checks unweighted and positive-weight-only variants plus one reference-only target scaling run.
 """
     ),
     code_cell(
@@ -500,7 +493,7 @@ else:
     markdown_cell(
         """## Block 9. Weighting-Grid Sweep Under the Current Loss Model
 
-Run a small grid over `positive_weight` and `count_weight_alpha` so the current compressed-brightness setting can be checked from fully unweighted training through several positive-emphasis variants.
+Run a small sweep over `positive_weight` so the current compressed-brightness setting can be checked from fully unweighted training through several positive-emphasis variants.
 """
     ),
     code_cell(
@@ -513,7 +506,6 @@ Run a small grid over `positive_weight` and `count_weight_alpha` so the current 
         base_training_config=ACTIVE["training"],
         device=DEVICE,
         positive_weights=[0.0, 10.0, 20.0, 30.0],
-        count_weight_alphas=[0.0, 20.0],
         seed=SEED,
     )
     positive_weight_table.to_csv(scene_output_dir / "weighting_grid_sweep.csv", index=False)

@@ -1,0 +1,5 @@
+epoch,loss_name,train_loss,num_graphs,num_nodes,target_field
+1,poisson_nll,0.43403342049495847,125,6375,y_edge_decay
+2,poisson_nll,0.07997634762598603,125,6375,y_edge_decay
+3,poisson_nll,0.06809022797746402,125,6375,y_edge_decay
+4,poisson_nll,0.06823795511354418,125,6375,y_edge_decay

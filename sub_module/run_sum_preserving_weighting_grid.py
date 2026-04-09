@@ -65,13 +65,11 @@ def main() -> None:
             dropout=0.05,
             output_activation="softplus",
             loss_name="poisson_nll",
-            positive_weight=12.0,
-            count_weight_alpha=20.0,
+            positive_weight=0.0,
             target_field="y_edge_decay",
         ),
         device=device,
         positive_weights=[0.0, 4.0, 8.0, 12.0],
-        count_weight_alphas=[0.0, 10.0, 20.0],
         seed=1,
     )
     out_path = output_dir / "sum_preserving_weighting_grid.csv"
@@ -80,7 +78,6 @@ def main() -> None:
         table[
             [
                 "positive_weight",
-                "count_weight_alpha",
                 "scene_topk_hit_rate",
                 "graph_topk_hit_rate",
                 "pred_sum_ratio",

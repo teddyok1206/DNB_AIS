@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 25
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 16:01 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 메인 supervision은 `sum-preserving y_edge_decay`를 유지한다. 이번엔 모델 단순화를 위해 `count_weight_alpha`를 코드에서 완전히 제거했고, loss 쪽 가중치는 `positive_weight`만 남겼다. 기본값은 `positive_weight=0.0`이다. MPS 기준 validation도 재실행해 `pred_graph_to_raw_ratio≈0.9345`를 확인했다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- `count_weight_alpha`와 관련 sweep/표기(`count_weight_alphas`, `cwa`)를 코드/노트북에서 전부 삭제했다. weighting 비교는 `positive_weight` 단일 축으로 단순화했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- iCloud 경로에서 고정 파일명 GeoTIFF overwrite 시 timeout이 가끔 발생한다. validation 스크립트는 `run_시간` 하위 출력으로 우회했지만, batch 루트 overwrite는 여전히 주의가 필요하다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- positive_weight 단일 축으로 성능/캘리브레이션 재튜닝
+
 ## Entry 24
 
 1. 업데이트 날짜, 시각

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from dataclasses import asdict
 from pathlib import Path
 
@@ -37,6 +38,9 @@ def main() -> None:
     geojson_path = step3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson"
     output_dir = root / "outputs" / "DNB_GAT_v1" / "A2025001_1754_021" / "batch_demo"
     output_dir.mkdir(parents=True, exist_ok=True)
+    run_tag = datetime.now().strftime("run_%m%d_%H%M%S")
+    run_output_dir = output_dir / run_tag
+    run_output_dir.mkdir(parents=True, exist_ok=True)
 
     scene = SceneRaster.load(scene_path)
     resolver = GroundTruthResolver(
@@ -70,7 +74,6 @@ def main() -> None:
         output_activation="softplus",
         loss_name="poisson_nll",
         positive_weight=0.0,
-        count_weight_alpha=0.0,
         target_field="y_edge_decay",
     )
 
@@ -156,10 +159,10 @@ def main() -> None:
             top_scene_idx = flat_heatmap.argpartition(-gt_scene_positive)[-gt_scene_positive:]
             pred_topk_hit_rate = float(flat_gt[top_scene_idx].mean())
 
-        history_path = output_dir / "sum_preserving_training_history.csv"
+        history_path = run_output_dir / "sum_preserving_training_history.csv"
         history.to_csv(history_path, index=False)
-        heatmap_path = assembler.save_geotiff(output_dir / f"{scene.key}_sum_preserving_heatmap.tif", heatmap)
-        overlay_path = output_dir / f"{scene.key}_sum_preserving_overlay.png"
+        heatmap_path = assembler.save_geotiff(run_output_dir / f"{scene.key}_sum_preserving_heatmap.tif", heatmap)
+        overlay_path = run_output_dir / f"{scene.key}_sum_preserving_overlay.png"
         overlay_rgb = make_overlay_rgb(scene.image, heatmap)
         plt.figure(figsize=(8, 6))
         plt.imshow(overlay_rgb)
@@ -169,12 +172,13 @@ def main() -> None:
         plt.savefig(overlay_path, dpi=180, bbox_inches="tight")
         plt.close()
         cluster_pred_summary = pd.DataFrame(cluster_pred_rows).sort_values("pred_sum", ascending=False).reset_index(drop=True)
-        cluster_pred_summary_path = output_dir / "sum_preserving_cluster_prediction_summary.csv"
+        cluster_pred_summary_path = run_output_dir / "sum_preserving_cluster_prediction_summary.csv"
         cluster_pred_summary.to_csv(cluster_pred_summary_path, index=False)
 
     report = {
         "scene_key": scene.key,
         "seed": seed,
+        "run_tag": run_tag,
         "device": str(device),
         "graph_count": len(graphs),
         "raw_scene_sum": raw_scene_sum,
@@ -201,9 +205,12 @@ def main() -> None:
     }
 
     report_path = output_dir / "sum_preserving_validation.json"
+    run_report_path = run_output_dir / "sum_preserving_validation.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    run_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print(str(report_path))
+    print(str(run_report_path))
     if history_path is not None:
         print(str(history_path))
 

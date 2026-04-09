@@ -270,7 +270,6 @@ class TrainingConfig:
     batch_size: int = 4
     loss_name: str = "poisson_nll"
     positive_weight: float = 0.0
-    count_weight_alpha: float = 0.0
     count_sum_lambda: float = 0.0
     target_scale: float = 1.0
     target_field: str = "y_edge_decay"
@@ -866,32 +865,37 @@ def loss_weighting_sweep(
 
     variants = [
         (
-            "baseline_pos12",
+            "baseline_unweighted",
             replace(
                 base_training_config,
-                positive_weight=12.0,
-                count_weight_alpha=0.0,
+                positive_weight=0.0,
                 count_sum_lambda=0.0,
                 target_scale=1.0,
             ),
         ),
         (
-            "count_weight_yx20",
+            "positive_weight_4",
             replace(
                 base_training_config,
-                positive_weight=12.0,
-                count_weight_alpha=20.0,
+                positive_weight=4.0,
                 count_sum_lambda=0.0,
                 target_scale=1.0,
             ),
         ),
         (
-            "count_weight_yx20_sum0.01",
+            "positive_weight_8",
+            replace(
+                base_training_config,
+                positive_weight=8.0,
+                target_scale=1.0,
+            ),
+        ),
+        (
+            "positive_weight_12",
             replace(
                 base_training_config,
                 positive_weight=12.0,
-                count_weight_alpha=20.0,
-                count_sum_lambda=0.01,
+                count_sum_lambda=0.0,
                 target_scale=1.0,
             ),
         ),
@@ -899,8 +903,7 @@ def loss_weighting_sweep(
             "target_scale_x6_ref",
             replace(
                 base_training_config,
-                positive_weight=12.0,
-                count_weight_alpha=0.0,
+                positive_weight=0.0,
                 count_sum_lambda=0.0,
                 target_scale=6.0,
             ),
@@ -956,7 +959,6 @@ def loss_weighting_sweep(
             {
                 "variant": variant_name,
                 "positive_weight": float(training_config.positive_weight),
-                "count_weight_alpha": float(training_config.count_weight_alpha),
                 "count_sum_lambda": float(training_config.count_sum_lambda),
                 "target_scale": float(training_config.target_scale),
                 "loss_name": training_config.loss_name,
@@ -1061,7 +1063,6 @@ def positive_weight_sweep(
         rows.append(
             {
                 "positive_weight": float(positive_weight),
-                "count_weight_alpha": float(training_config.count_weight_alpha),
                 "loss_name": training_config.loss_name,
                 "output_activation": training_config.output_activation,
                 "graph_count": int(len(graphs)),
@@ -1103,7 +1104,6 @@ def weighting_grid_sweep(
     device: torch.device,
     *,
     positive_weights: Iterable[float],
-    count_weight_alphas: Iterable[float],
     seed: int = 1,
 ) -> pd.DataFrame:
     cluster_list = list(clusters)
@@ -1118,84 +1118,81 @@ def weighting_grid_sweep(
     scene_positive_mask = gt_count_map > 0
 
     rows: list[dict[str, Any]] = []
-    for count_weight_alpha in count_weight_alphas:
-        for positive_weight in positive_weights:
-            np.random.seed(seed)
-            torch.manual_seed(seed)
+    for positive_weight in positive_weights:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
-            training_config = replace(
-                base_training_config,
-                positive_weight=float(positive_weight),
-                count_weight_alpha=float(count_weight_alpha),
-            )
-            model = GATDensityRegressor(
-                in_channels=3,
-                hidden_channels=training_config.hidden_channels,
-                heads=training_config.heads,
-                num_layers=training_config.num_layers,
-                dropout=training_config.dropout,
-                output_activation=training_config.output_activation,
-            )
-            history = train_gat(model, graphs, device, training_config)
-            predictions = predict_graphs(model, graphs, device)
-            all_pred = np.concatenate(
-                [
-                    predictions[int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0])]
-                    for graph in graphs
-                ]
-            )
+        training_config = replace(
+            base_training_config,
+            positive_weight=float(positive_weight),
+        )
+        model = GATDensityRegressor(
+            in_channels=3,
+            hidden_channels=training_config.hidden_channels,
+            heads=training_config.heads,
+            num_layers=training_config.num_layers,
+            dropout=training_config.dropout,
+            output_activation=training_config.output_activation,
+        )
+        history = train_gat(model, graphs, device, training_config)
+        predictions = predict_graphs(model, graphs, device)
+        all_pred = np.concatenate(
+            [
+                predictions[int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0])]
+                for graph in graphs
+            ]
+        )
 
-            gt_node_pred_mean = float(all_pred[positive_mask].mean()) if positive_count else 0.0
-            bg_node_pred_mean = float(all_pred[~positive_mask].mean()) if (~positive_mask).any() else 0.0
-            gt_bg_ratio = float(gt_node_pred_mean / max(bg_node_pred_mean, 1.0e-6))
+        gt_node_pred_mean = float(all_pred[positive_mask].mean()) if positive_count else 0.0
+        bg_node_pred_mean = float(all_pred[~positive_mask].mean()) if (~positive_mask).any() else 0.0
+        gt_bg_ratio = float(gt_node_pred_mean / max(bg_node_pred_mean, 1.0e-6))
 
-            graph_topk_hits = 0
-            if positive_count > 0:
-                top_idx = np.argpartition(all_pred, -positive_count)[-positive_count:]
-                graph_topk_hits = int((all_y[top_idx] > 0).sum())
+        graph_topk_hits = 0
+        if positive_count > 0:
+            top_idx = np.argpartition(all_pred, -positive_count)[-positive_count:]
+            graph_topk_hits = int((all_y[top_idx] > 0).sum())
 
-            assembler = SceneAssembler(scene)
-            for cluster in cluster_list:
-                assembler.accumulate(cluster, predictions[cluster.cluster_id])
-            heatmap = assembler.finalize()
+        assembler = SceneAssembler(scene)
+        for cluster in cluster_list:
+            assembler.accumulate(cluster, predictions[cluster.cluster_id])
+        heatmap = assembler.finalize()
 
-            scene_topk_hits = 0
-            if gt_scene_positive > 0 and np.any(heatmap > 0):
-                flat_heatmap = heatmap.reshape(-1)
-                top_scene_idx = np.argpartition(flat_heatmap, -gt_scene_positive)[-gt_scene_positive:]
-                scene_topk_hits = int(scene_positive_mask.reshape(-1)[top_scene_idx].sum())
+        scene_topk_hits = 0
+        if gt_scene_positive > 0 and np.any(heatmap > 0):
+            flat_heatmap = heatmap.reshape(-1)
+            top_scene_idx = np.argpartition(flat_heatmap, -gt_scene_positive)[-gt_scene_positive:]
+            scene_topk_hits = int(scene_positive_mask.reshape(-1)[top_scene_idx].sum())
 
-            heatmap_gt_mean = float(heatmap[scene_positive_mask].mean()) if gt_scene_positive else 0.0
-            heatmap_bg_mean = float(heatmap[~scene_positive_mask].mean()) if (~scene_positive_mask).any() else 0.0
+        heatmap_gt_mean = float(heatmap[scene_positive_mask].mean()) if gt_scene_positive else 0.0
+        heatmap_bg_mean = float(heatmap[~scene_positive_mask].mean()) if (~scene_positive_mask).any() else 0.0
 
-            rows.append(
-                {
-                    "positive_weight": float(positive_weight),
-                    "count_weight_alpha": float(count_weight_alpha),
-                    "loss_name": training_config.loss_name,
-                    "output_activation": training_config.output_activation,
-                    "graph_count": int(len(graphs)),
-                    "total_nodes": int(sum(int(graph.num_nodes) for graph in graphs)),
-                    "positive_graph_nodes": positive_count,
-                    "final_train_loss": float(history["train_loss"].iloc[-1]),
-                    "graph_topk_hits": graph_topk_hits,
-                    "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
-                    "scene_topk_hits": scene_topk_hits,
-                    "scene_topk_hit_rate": float(scene_topk_hits / max(gt_scene_positive, 1)),
-                    "gt_node_pred_mean": gt_node_pred_mean,
-                    "bg_node_pred_mean": bg_node_pred_mean,
-                    "gt_bg_ratio": gt_bg_ratio,
-                    "pred_sum_graph_nodes": float(all_pred.sum()),
-                    "gt_sum_graph_nodes": float(all_y.sum()),
-                    "pred_sum_ratio": float(all_pred.sum() / max(float(all_y.sum()), 1.0e-6)),
-                    "heatmap_nonzero_pixels": int((heatmap > 0).sum()),
-                    "heatmap_max": float(heatmap.max()),
-                    "heatmap_mean": float(heatmap.mean()),
-                    "heatmap_sum": float(heatmap.sum()),
-                    "heatmap_gt_mean": heatmap_gt_mean,
-                    "heatmap_bg_mean": heatmap_bg_mean,
-                }
-            )
+        rows.append(
+            {
+                "positive_weight": float(positive_weight),
+                "loss_name": training_config.loss_name,
+                "output_activation": training_config.output_activation,
+                "graph_count": int(len(graphs)),
+                "total_nodes": int(sum(int(graph.num_nodes) for graph in graphs)),
+                "positive_graph_nodes": positive_count,
+                "final_train_loss": float(history["train_loss"].iloc[-1]),
+                "graph_topk_hits": graph_topk_hits,
+                "graph_topk_hit_rate": float(graph_topk_hits / max(positive_count, 1)),
+                "scene_topk_hits": scene_topk_hits,
+                "scene_topk_hit_rate": float(scene_topk_hits / max(gt_scene_positive, 1)),
+                "gt_node_pred_mean": gt_node_pred_mean,
+                "bg_node_pred_mean": bg_node_pred_mean,
+                "gt_bg_ratio": gt_bg_ratio,
+                "pred_sum_graph_nodes": float(all_pred.sum()),
+                "gt_sum_graph_nodes": float(all_y.sum()),
+                "pred_sum_ratio": float(all_pred.sum() / max(float(all_y.sum()), 1.0e-6)),
+                "heatmap_nonzero_pixels": int((heatmap > 0).sum()),
+                "heatmap_max": float(heatmap.max()),
+                "heatmap_mean": float(heatmap.mean()),
+                "heatmap_sum": float(heatmap.sum()),
+                "heatmap_gt_mean": heatmap_gt_mean,
+                "heatmap_bg_mean": heatmap_bg_mean,
+            }
+        )
 
     return (
         pd.DataFrame(rows)
@@ -1610,8 +1607,6 @@ def train_gat(
             weights = torch.ones_like(target)
             if config.positive_weight != 0.0:
                 weights = weights + (target > 0).float() * config.positive_weight
-            if config.count_weight_alpha != 0.0:
-                weights = weights + target * float(config.count_weight_alpha)
 
             if loss_name == "mse":
                 element_loss = (pred - target) ** 2
@@ -1711,7 +1706,6 @@ def single_graph_overfit_sweep(
                 "target_field": training_config.target_field,
                 "loss_name": training_config.loss_name,
                 "positive_weight": float(training_config.positive_weight),
-                "count_weight_alpha": float(training_config.count_weight_alpha),
                 "epochs": int(training_config.epochs),
                 "lr": float(training_config.lr),
                 "weight_decay": float(training_config.weight_decay),
