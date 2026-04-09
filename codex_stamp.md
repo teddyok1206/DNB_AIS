@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 21
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 11:29 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. graph supervision의 `y_edge_decay`는 sum-preserving target으로 유지된다. 다만 현재 `DNB_AIS` 환경에서 MPS는 여전히 비활성이라, 이번 턴은 GPU 복구 여부만 재점검했다. `torch 2.9.1`에서 `mps_built=True`, `mps_available=False`이며 최소 tensor 생성도 실패했다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- 코드 변경 없이 MPS를 다시 테스트했다. macOS 15.7.3, arm64 환경이지만 `DNB_AIS`에서는 여전히 `mps_available=False`로 확인됐다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- OS 버전은 조건을 만족하지만 현재 Codex 세션에서는 MPS가 비활성이다. 따라서 GPU 기준 재학습/재추론은 아직 진행할 수 없다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- MPS 사용 가능 상태 복구 후 batch_demo 재검증
+
 ## Entry 20
 
 1. 업데이트 날짜, 시각
