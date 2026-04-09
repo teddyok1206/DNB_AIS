@@ -48,7 +48,7 @@ NOTEBOOK_CELLS = [
 - Main graph supervision uses sum-preserving edge-decay GT spreading (`y_edge_decay`) so one ship-center pixel influences nearby nodes through the graph radius while the total ship-count mass remains unchanged. Raw point GT (`y`) is still retained for comparison and diagnostics.
 - `max_catalogue_clusters` is disabled by default so DRUID candidate selection is driven by `area_limit`, not a top-k lifetime cap.
 - Each execution writes to a fresh `RUN_TAG` subdirectory so Desktop/iCloud overwrite stalls do not block reruns.
-- Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)` so ship-count targets are treated as non-negative intensity values rather than only squared-error residuals.
+- Default regression uses a `Softplus` output head with `PoissonNLLLoss(log_input=False)`. Extra positive/count weighting is disabled by default because, under the sum-preserving target, those weights inflated predicted counts without improving ranking on `batch_demo`.
 - Runtime is expected to use Apple MPS. The notebook raises immediately if MPS is not available so troubleshooting stays on GPU.
 """
     ),
@@ -125,8 +125,8 @@ SCENES = {
             dropout=0.05,
             output_activation="softplus",
             loss_name="poisson_nll",
-            positive_weight=12.0,
-            count_weight_alpha=20.0,
+            positive_weight=0.0,
+            count_weight_alpha=0.0,
             target_field="y_edge_decay",
         ),
     },
@@ -156,8 +156,8 @@ SCENES = {
             dropout=0.05,
             output_activation="softplus",
             loss_name="poisson_nll",
-            positive_weight=12.0,
-            count_weight_alpha=20.0,
+            positive_weight=0.0,
+            count_weight_alpha=0.0,
             target_field="y_edge_decay",
         ),
     },

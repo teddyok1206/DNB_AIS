@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 23
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 12:02 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. graph supervision의 `y_edge_decay`는 sum-preserving target이며, 메인 기본 학습은 이제 `PoissonNLL + Softplus + 무가중치`다. batch_demo를 MPS에서 다시 검증한 결과 `raw_graph_sum=80`, `pred_graph_sum≈74.76`으로 graph-level count가 원본 척수 합과 직접 연결되는 수준까지 개선됐다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- sum-preserving target 아래에서 weighting이 count calibration만 망친다는 것을 확인하고, 기본 `positive_weight`와 `count_weight_alpha`를 0으로 바꿨다. MPS 기준 재검증도 완료했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- graph-level sum은 거의 척수 해석이 가능해졌지만, full-scene merge는 lifetime 가중평균이라 raster 합이 총 척수를 보존하지 않는다. scene assembly 단계의 count 보존이 아직 남아 있다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- count-preserving scene assembly 설계 및 full-scene 척수 보존 검증
+
 ## Entry 22
 
 1. 업데이트 날짜, 시각

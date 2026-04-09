@@ -269,7 +269,7 @@ class TrainingConfig:
     epochs: int = 4
     batch_size: int = 4
     loss_name: str = "poisson_nll"
-    positive_weight: float = 8.0
+    positive_weight: float = 0.0
     count_weight_alpha: float = 0.0
     count_sum_lambda: float = 0.0
     target_scale: float = 1.0

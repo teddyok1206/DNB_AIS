@@ -4,6 +4,11 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+
 from sub_module.dnb_gat_pipeline import (
     DruidClusterStore,
     DruidConfig,
@@ -11,6 +16,7 @@ from sub_module.dnb_gat_pipeline import (
     GraphBuilder,
     GraphConfig,
     GroundTruthResolver,
+    make_overlay_rgb,
     SceneAssembler,
     SceneRaster,
     TrainingConfig,
@@ -21,6 +27,10 @@ from sub_module.dnb_gat_pipeline import (
 
 
 def main() -> None:
+    seed = 1
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
     root = Path(__file__).resolve().parents[1]
     step3 = root / "[3]_DNB_AIS - (STEP 3)"
     scene_path = step3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_batch_1.tif"
@@ -59,8 +69,8 @@ def main() -> None:
         dropout=0.05,
         output_activation="softplus",
         loss_name="poisson_nll",
-        positive_weight=12.0,
-        count_weight_alpha=20.0,
+        positive_weight=0.0,
+        count_weight_alpha=0.0,
         target_field="y_edge_decay",
     )
 
@@ -95,6 +105,13 @@ def main() -> None:
     heatmap_max = None
     heatmap_mean = None
     history_path = None
+    heatmap_path = None
+    overlay_path = None
+    cluster_pred_summary_path = None
+    pred_positive_pixel_count = None
+    pred_topk_hit_rate = None
+    pred_gt_mean = None
+    pred_bg_mean = None
     if device.type == "mps":
         model = GATDensityRegressor(
             in_channels=int(graphs[0].x.shape[1]),
@@ -108,19 +125,56 @@ def main() -> None:
         predictions = predict_graphs(model, graphs, device)
         assembler = SceneAssembler(scene)
         cluster_by_id = {cluster.cluster_id: cluster for cluster in cluster_store.clusters}
+        cluster_pred_rows = []
         for cluster_id, pred in predictions.items():
             assembler.accumulate(cluster_by_id[cluster_id], pred)
+            graph = next(graph for graph in graphs if int(graph.cluster_id.detach().cpu().numpy().reshape(-1)[0]) == cluster_id)
+            cluster_pred_rows.append(
+                {
+                    "cluster_id": int(cluster_id),
+                    "raw_target_sum": float(graph.y.sum()),
+                    "edge_target_sum": float(graph.y_edge_decay.sum()),
+                    "pred_sum": float(pred.sum()),
+                    "pred_max": float(pred.max()) if pred.size else 0.0,
+                    "pred_to_edge_ratio": float(pred.sum() / float(graph.y_edge_decay.sum())) if float(graph.y_edge_decay.sum()) > 0 else None,
+                }
+            )
         heatmap = assembler.finalize()
 
         pred_graph_sum = float(sum(float(pred.sum()) for pred in predictions.values()))
         heatmap_sum = float(heatmap.sum())
         heatmap_max = float(heatmap.max())
         heatmap_mean = float(heatmap.mean())
+        pred_positive_pixel_count = int((heatmap > 0).sum())
+        scene_positive_mask = gt_count_map > 0
+        gt_scene_positive = int(scene_positive_mask.sum())
+        pred_gt_mean = float(heatmap[scene_positive_mask].mean()) if gt_scene_positive else 0.0
+        pred_bg_mean = float(heatmap[~scene_positive_mask].mean()) if (~scene_positive_mask).any() else 0.0
+        if gt_scene_positive > 0 and pred_positive_pixel_count > 0:
+            flat_heatmap = heatmap.reshape(-1)
+            flat_gt = scene_positive_mask.reshape(-1)
+            top_scene_idx = flat_heatmap.argpartition(-gt_scene_positive)[-gt_scene_positive:]
+            pred_topk_hit_rate = float(flat_gt[top_scene_idx].mean())
+
         history_path = output_dir / "sum_preserving_training_history.csv"
         history.to_csv(history_path, index=False)
+        heatmap_path = assembler.save_geotiff(output_dir / f"{scene.key}_sum_preserving_heatmap.tif", heatmap)
+        overlay_path = output_dir / f"{scene.key}_sum_preserving_overlay.png"
+        overlay_rgb = make_overlay_rgb(scene.image, heatmap)
+        plt.figure(figsize=(8, 6))
+        plt.imshow(overlay_rgb)
+        plt.title("Sum-preserving heatmap overlay")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.savefig(overlay_path, dpi=180, bbox_inches="tight")
+        plt.close()
+        cluster_pred_summary = pd.DataFrame(cluster_pred_rows).sort_values("pred_sum", ascending=False).reset_index(drop=True)
+        cluster_pred_summary_path = output_dir / "sum_preserving_cluster_prediction_summary.csv"
+        cluster_pred_summary.to_csv(cluster_pred_summary_path, index=False)
 
     report = {
         "scene_key": scene.key,
+        "seed": seed,
         "device": str(device),
         "graph_count": len(graphs),
         "raw_scene_sum": raw_scene_sum,
@@ -131,9 +185,16 @@ def main() -> None:
         "heatmap_sum": heatmap_sum,
         "heatmap_max": heatmap_max,
         "heatmap_mean": heatmap_mean,
+        "heatmap_nonzero_pixels": pred_positive_pixel_count,
+        "heatmap_gt_mean": pred_gt_mean,
+        "heatmap_bg_mean": pred_bg_mean,
+        "scene_topk_hit_rate": pred_topk_hit_rate,
         "pred_graph_to_raw_ratio": (pred_graph_sum / raw_graph_sum) if (pred_graph_sum is not None and raw_graph_sum) else None,
         "heatmap_to_raw_ratio": (heatmap_sum / raw_scene_sum) if (heatmap_sum is not None and raw_scene_sum) else None,
         "training_skipped": device.type != "mps",
+        "heatmap_path": str(heatmap_path) if heatmap_path is not None else None,
+        "overlay_path": str(overlay_path) if overlay_path is not None else None,
+        "cluster_pred_summary_path": str(cluster_pred_summary_path) if cluster_pred_summary_path is not None else None,
         "graph_config": asdict(graph_config),
         "training_config": asdict(training_config),
         "largest_positive_graph_diffs": positive_graph_diffs[:10],
