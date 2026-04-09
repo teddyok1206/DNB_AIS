@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 24
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 14:18 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. 메인 supervision은 `sum-preserving y_edge_decay`를 유지하되, loss weighting(`positive_weight`, `count_weight_alpha`)은 기본값에서 제거됐다. graph-level count calibration은 해석 보조 지표로 유지하고, full-scene merge는 같은 구조의 중복 cluster를 lifetime으로 통합하는 가중평균으로 계속 본다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- 사용자 우선순위를 반영해 총합 보존을 최우선 기준으로 두지 않기로 정리했다. `edge-decay GT`는 유지하고, full-scene merge의 lifetime 가중평균은 물리적으로 타당한 기본 해석으로 유지한다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- graph-level count 해석과 full-scene merge 해석은 분리해서 봐야 한다. merge 결과의 적분값을 척수와 직접 동일시할지 여부는 아직 최종 확정하지 않았다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- 예측 성능 우선 기준으로 sum-preserving GT와 merge 설정 추가 검증
+
 ## Entry 23
 
 1. 업데이트 날짜, 시각
