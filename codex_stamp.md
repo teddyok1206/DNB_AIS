@@ -2,6 +2,23 @@
 
 최신 entry를 맨 위에 추가하는 누적 로그 형식으로 유지한다. 기존 entry는 지우지 않는다.
 
+## Entry 22
+
+1. 업데이트 날짜, 시각
+- 2026-04-09 11:32 KST
+
+2. 전체 pipeline에 대한 상세한 description (공백 포함 500자 이내)
+- GeoTIFF DNB 영상을 입력으로 받아 GT geojson/DB를 확인하고, DRUID로 irregular contour patch를 만든다. graph supervision의 `y_edge_decay`는 sum-preserving target으로 유지된다. 이번에는 MPS 상태를 sandbox 밖에서 다시 확인했고, `DNB_AIS` 환경 자체는 정상이며 `torch 2.9.1`에서 `mps_available=True`, 실제 `mps:0` tensor 연산도 성공했다. 즉 현재 GPU 문제는 로컬 환경이 아니라 Codex 기본 sandbox의 제한이었다.
+
+3. 가장 최근 pipeline과 비교했을 때의 변경 사항 요약 (공백 포함 200자 이내)
+- MPS가 실제로는 정상임을 확인했다. sandbox 안 테스트만 거짓 음성이었고, unsandboxed 실행에서는 `mps_available=True`와 `mps:0` 연산 성공을 확인했다.
+
+4. 발생한 이슈들 중 해결하지 못한 이슈들에 대한 설명 (공백 포함 200자 이내)
+- 이후 GPU/MPS가 필요한 학습·추론은 Codex 기본 sandbox 밖에서 실행해야 한다. sandbox 상태만 보면 계속 MPS가 꺼진 것처럼 보일 수 있다.
+
+5. 다음 단계로 계획 중인 task에 대한 description (공백 포함 100자 이내)
+- unsandboxed MPS로 batch_demo 재실행 및 sum-preserving GT 추론 검증
+
 ## Entry 21
 
 1. 업데이트 날짜, 시각
