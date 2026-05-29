@@ -225,6 +225,38 @@ Smoke split artifacts under `outputs/` are runtime diagnostics, not final
 manifests. Keep them out of git unless a small curated metric summary is
 explicitly needed.
 
+### MPS Smoke Train
+
+Use `sub_module.run_density_split_smoke_train` to verify that the U-Net training
+and inference path works end-to-end on a day-grouped split. For Mac MPS, this
+command must be run outside the sandbox because sandboxed processes can fail to
+see the Metal device even when the hardware supports it.
+
+```sh
+PYTORCH_ENABLE_MPS_FALLBACK=0 \
+PYTHONPATH=. \
+/Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_split_smoke_train \
+  --scene-split-csv "[3]_DNB_AIS - (STEP 3)/outputs/density_smoke_split_10_3_2/scene_split_ph_positive_minimal.csv" \
+  --config configs/dnb_density_unet_main.json \
+  --output-dir "[3]_DNB_AIS - (STEP 3)/outputs/density_split_smoke_train_mps_ph_positive_minimal" \
+  --device mps \
+  --epochs 1 \
+  --batch-size 2 \
+  --max-patches-per-scene 8 \
+  --max-patch-height 512 \
+  --max-patch-width 512 \
+  --preview-patches 8
+```
+
+`PYTORCH_ENABLE_MPS_FALLBACK=0` is intentional for this check. Unsupported MPS
+ops should fail instead of silently falling back to CPU. Raster IO, KR sea
+masking, PH extraction, and partition construction are still CPU/IO
+preprocessing steps; the GPU requirement applies to the PyTorch model
+forward/backward/inference tensors.
+
+The split-smoke runner refuses CPU execution. `--device auto` resolves to MPS
+and raises if `torch.backends.mps.is_available()` is false.
+
 ## Smoke Test
 
 From repository root:

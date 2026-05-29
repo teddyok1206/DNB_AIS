@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import torch
@@ -40,7 +40,8 @@ def _as_tuple_of_ints(values: Any, *, default: tuple[int, ...]) -> tuple[int, ..
 def density_loss_config_from_dict(config: dict[str, Any] | None) -> DensityLossConfig:
     if not config:
         return DensityLossConfig()
-    values = dict(config)
+    allowed = {item.name for item in fields(DensityLossConfig)}
+    values = {key: value for key, value in dict(config).items() if key in allowed}
     if "local_count_windows" in values:
         values["local_count_windows"] = _as_tuple_of_ints(
             values["local_count_windows"],
