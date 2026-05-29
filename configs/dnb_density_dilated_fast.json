@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "experiment_family": "dnb_density_heatmap",
+  "role": "fast",
+  "description": "CSRNet-inspired fast dilated CNN baseline for DNB ship-count density prediction.",
+  "device": "mps",
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 1.0,
+    "threshold_reference": "zero",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 12,
+    "min_nodes": 16,
+    "max_nodes": 2500,
+    "drop_nested": true
+  },
+  "patching": {
+    "padding_pixels": 16,
+    "size_divisor": 16,
+    "input_channels": ["brightness", "ph_roi_mask"],
+    "loss_mask": "ph_roi_mask"
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.5,
+    "radius_pixels": 5,
+    "renormalize_after_roi_mask": true,
+    "require_source_in_roi": true,
+    "per_ship_mass": 1.0
+  },
+  "model": {
+    "name": "MaskedDilatedDensityNet",
+    "in_channels": 2,
+    "out_channels": 1,
+    "base_channels": 32,
+    "dilations": [1, 2, 4, 8, 4, 2],
+    "activation": "softplus",
+    "dropout": 0.0
+  },
+  "training": {
+    "loss": "masked_mse_initial_baseline",
+    "batch_size": 8,
+    "epochs": 20,
+    "lr": 0.001,
+    "weight_decay": 0.0001
+  }
+}

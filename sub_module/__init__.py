@@ -15,6 +15,29 @@ from .dnb_gat_pipeline import (
     resolve_device,
     train_gat,
 )
+from .dnb_candidate_detector import (
+    DnbCandidateDetector,
+    DnbCandidateDetectorConfig,
+    candidate_store_summary,
+)
+from .dnb_density_common import (
+    DensityPatch,
+    DensityPatchConfig,
+    DensityPatchDataset,
+    DensityTargetConfig,
+    build_density_patches,
+    density_patch_collate,
+    masked_mse_loss,
+    masked_poisson_nll_loss,
+    move_density_batch_to_device,
+    summarize_density_patches,
+)
+from .dnb_density_models import (
+    DensityModelConfig,
+    MaskedDensityUNet,
+    MaskedDilatedDensityNet,
+    build_density_model,
+)
 
 __all__ = [
     "DruidCluster",
@@ -32,4 +55,21 @@ __all__ = [
     "predict_graphs",
     "resolve_device",
     "train_gat",
+    "DnbCandidateDetector",
+    "DnbCandidateDetectorConfig",
+    "candidate_store_summary",
+    "DensityPatch",
+    "DensityPatchConfig",
+    "DensityPatchDataset",
+    "DensityTargetConfig",
+    "build_density_patches",
+    "density_patch_collate",
+    "masked_mse_loss",
+    "masked_poisson_nll_loss",
+    "move_density_batch_to_device",
+    "summarize_density_patches",
+    "DensityModelConfig",
+    "MaskedDensityUNet",
+    "MaskedDilatedDensityNet",
+    "build_density_model",
 ]
