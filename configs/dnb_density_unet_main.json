@@ -11,7 +11,7 @@
     "segment_policy": "single_scene",
     "write_masked_tif": true,
     "output_dir": "outputs/preprocessed_scene_masks/density",
-    "all_touched": false
+    "all_touched": true
   },
   "detector": {
     "name": "DnbCandidateDetector",
@@ -49,6 +49,15 @@
       "ph_soft_attention"
     ],
     "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 96,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 16,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only."
   },
   "target": {
     "kernel": "gaussian",

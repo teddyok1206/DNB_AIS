@@ -43,6 +43,12 @@ from .kr_sea_mask import (
     apply_kr_sea_mask,
     load_kr_sea_geometry,
 )
+from .dnb_scene_partition import (
+    ScenePartition,
+    ScenePartitionConfig,
+    build_partitioned_density_patches,
+    build_scene_partitions,
+)
 
 __all__ = [
     "DruidCluster",
@@ -80,4 +86,8 @@ __all__ = [
     "KRSeaMaskResult",
     "apply_kr_sea_mask",
     "load_kr_sea_geometry",
+    "ScenePartition",
+    "ScenePartitionConfig",
+    "build_partitioned_density_patches",
+    "build_scene_partitions",
 ]

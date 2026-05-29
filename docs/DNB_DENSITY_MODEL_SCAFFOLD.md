@@ -149,7 +149,26 @@ full DNB scene
 
 The partitioning step should use PH results as adaptive anchors, but it must not leave ocean pixels uncovered. This means PH components are region-proposal seeds, not the full partition by themselves. Background ocean between PH components still needs assignment to a partition, for example by bounding-box expansion, Voronoi/watershed-style assignment from PH seeds, or a fixed fallback grid where PH coverage is weak.
 
-Current implementation is still patch/proposal based. The next pipeline stage should add this full-scene partitioner before real training/inference loops.
+Implemented partitioning path:
+
+- `sub_module.dnb_scene_partition.build_scene_partitions` assigns every valid sea pixel exactly once.
+- PH anchor partitions claim padded PH parent boxes first.
+- Fallback grid partitions claim the remaining valid sea pixels.
+- Each partition keeps halo/context pixels for the U-Net input, but the patch `valid_mask` marks only owned output/loss pixels.
+- Active KR sea masking uses `all_touched=true` so boundary sea pixels do not drop GT points.
+
+Current smoke result on `TEST_5_A2025001_1754_021_batch_1.tif`:
+
+```text
+partition_count = 21
+ph_anchor_count = 18
+fallback_grid_count = 3
+valid_sea_pixels = 24770
+missed_valid_pixels = 0
+overlap_valid_pixels = 0
+raw_count_sum = 160.0
+target_density_sum = 160.0
+```
 
 ## Archival Baselines
 

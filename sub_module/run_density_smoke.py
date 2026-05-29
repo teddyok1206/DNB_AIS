@@ -26,6 +26,7 @@ from .dnb_density_common import (
 from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
 from .kr_sea_mask import apply_kr_sea_mask
+from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -110,6 +111,19 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
     for source_key, target_key in patching_map.items():
         if source_key in patching and patching[source_key] is not None:
             defaults[target_key] = patching[source_key]
+
+    partitioning = config.get("partitioning", {})
+    partitioning_map = {
+        "enabled": "partitioning",
+        "fallback_tile_pixels": "partition_fallback_tile_pixels",
+        "halo_pixels": "partition_halo_pixels",
+        "anchor_padding_pixels": "partition_anchor_padding_pixels",
+        "min_owner_pixels": "partition_min_owner_pixels",
+        "min_fallback_owner_pixels": "partition_min_fallback_owner_pixels",
+    }
+    for source_key, target_key in partitioning_map.items():
+        if source_key in partitioning and partitioning[source_key] is not None:
+            defaults[target_key] = partitioning[source_key]
 
     target = config.get("target", {})
     target_map = {
@@ -258,7 +272,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kr-eez-segment-policy", choices=["single_scene", "largest_segment"], default="single_scene")
     parser.add_argument("--kr-eez-write-masked-tif", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=ROOT / "outputs" / "preprocessed_scene_masks" / "density")
-    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -266,6 +280,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-patches", type=int, default=24)
     parser.add_argument("--padding-pixels", type=int, default=16)
     parser.add_argument("--size-divisor", type=int, default=16)
+    parser.add_argument("--partitioning", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--partition-fallback-tile-pixels", type=int, default=96)
+    parser.add_argument("--partition-halo-pixels", type=int, default=16)
+    parser.add_argument("--partition-anchor-padding-pixels", type=int, default=16)
+    parser.add_argument("--partition-min-owner-pixels", type=int, default=1)
+    parser.add_argument("--partition-min-fallback-owner-pixels", type=int, default=1)
     parser.add_argument("--sort-by", choices=["lifetime", "cluster_id", "node_count"], default="node_count")
     parser.add_argument("--parent-min-nodes", type=int, default=32)
     parser.add_argument("--parent-max-nodes", type=int, default=0)
@@ -440,14 +460,34 @@ def main(argv: list[str] | None = None) -> int:
         renormalize_after_roi_mask=bool(args.target_renormalize_after_roi_mask),
         require_source_in_roi=bool(args.target_require_source_in_roi),
     )
-    patches = build_density_patches(
-        scene,
-        gt_count_map,
-        store,
-        valid_mask=valid_sea_mask,
-        patch_config=patch_config,
-        target_config=target_config,
-    )
+    partition_summary: dict[str, Any] | None = None
+    if bool(args.partitioning):
+        partition_config = ScenePartitionConfig(
+            enabled=True,
+            fallback_tile_pixels=int(args.partition_fallback_tile_pixels),
+            halo_pixels=int(args.partition_halo_pixels),
+            anchor_padding_pixels=int(args.partition_anchor_padding_pixels),
+            min_owner_pixels=int(args.partition_min_owner_pixels),
+            min_fallback_owner_pixels=int(args.partition_min_fallback_owner_pixels),
+        )
+        patches, _, partition_summary = build_partitioned_density_patches(
+            scene,
+            gt_count_map,
+            store,
+            valid_mask=valid_sea_mask,
+            patch_config=patch_config,
+            target_config=target_config,
+            partition_config=partition_config,
+        )
+    else:
+        patches = build_density_patches(
+            scene,
+            gt_count_map,
+            store,
+            valid_mask=valid_sea_mask,
+            patch_config=patch_config,
+            target_config=target_config,
+        )
     if not patches:
         raise RuntimeError("No density patches were built")
     preview_paths: list[str] = []
@@ -475,6 +515,8 @@ def main(argv: list[str] | None = None) -> int:
         "gt_point_count": int(len(gt_points)),
         "gt_count_sum": float(gt_count_map.sum()),
         "sea_mask": sea_mask_result,
+        "partitioning_enabled": bool(args.partitioning),
+        "partition_summary": partition_summary,
         "detector_summary": candidate_store_summary(store),
         "patch_summary": summarize_density_patches(patches),
         "target_config": target_config.__dict__,

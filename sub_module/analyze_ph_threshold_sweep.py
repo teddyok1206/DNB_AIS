@@ -92,7 +92,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kr-eez-segment-policy", choices=["single_scene", "largest_segment"], default="single_scene")
     parser.add_argument("--kr-eez-write-masked-tif", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=ROOT / "outputs" / "preprocessed_scene_masks" / "density")
-    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "ph_threshold_sweep")
     parser.add_argument("--case", action="append", default=None, help="name,parent_detection,parent_analysis[,child_detection,child_analysis]")
     parser.add_argument("--top-n", type=int, default=24)

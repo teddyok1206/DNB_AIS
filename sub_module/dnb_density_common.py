@@ -58,6 +58,9 @@ class DensityPatch:
     target_density: np.ndarray
     raw_count: np.ndarray
     child_ids: list[int] = field(default_factory=list)
+    partition_id: int | None = None
+    partition_kind: str = "ph_proposal"
+    anchor_cluster_id: int | None = None
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -512,6 +515,9 @@ def density_patch_collate(
                 "child_pixels": int(patch.child_pixels),
                 "child_count": int(len(patch.child_ids)),
                 "child_ids": [int(child_id) for child_id in patch.child_ids],
+                "partition_id": None if patch.partition_id is None else int(patch.partition_id),
+                "partition_kind": str(patch.partition_kind),
+                "anchor_cluster_id": None if patch.anchor_cluster_id is None else int(patch.anchor_cluster_id),
                 "raw_count_sum": float(patch.raw_count_sum),
                 "target_sum": float(patch.target_sum),
                 "loss_weight_sum": float(patch.loss_weight_sum),
@@ -575,6 +581,7 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
     target_sums = np.array([patch.target_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     loss_weight_sums = np.array([patch.loss_weight_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     valid_pixels = np.array([patch.valid_pixels for patch in patch_list], dtype=np.int64) if patch_list else np.array([], dtype=np.int64)
+    partition_kinds = [str(patch.partition_kind) for patch in patch_list]
     return {
         "patch_count": int(len(patch_list)),
         "height_min": int(shapes[:, 0].min()) if shapes.size else 0,
@@ -593,4 +600,6 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
         "loss_weight_sum": float(loss_weight_sums.sum()) if loss_weight_sums.size else 0.0,
         "valid_pixels_total": int(valid_pixels.sum()) if valid_pixels.size else 0,
         "valid_pixels_median": int(np.median(valid_pixels)) if valid_pixels.size else 0,
+        "ph_anchor_patch_count": int(sum(kind == "ph_anchor" for kind in partition_kinds)),
+        "fallback_grid_patch_count": int(sum(kind == "fallback_grid" for kind in partition_kinds)),
     }
