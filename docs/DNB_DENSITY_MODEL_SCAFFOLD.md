@@ -105,6 +105,63 @@ spread the density into a blurry or physically misplaced heatmap.
 density is effectively zero. This keeps fallback-grid background partitions from
 becoming unconstrained false-positive areas.
 
+## Count Output Interpretation
+
+The model output is a continuous non-negative density map, not a softmax over
+integer count classes.
+
+```text
+model(input) -> density_pred[h, w] >= 0
+count_pred(partition) = sum(density_pred * valid_owner_mask)
+```
+
+The true ship count is integer-valued, but the training signal is handled as a
+continuous expected count. This is consistent with density-map crowd/object
+counting literature: the integer count is recovered by integrating/summing the
+predicted density, while losses remain differentiable with respect to continuous
+pixel values. Rounding is therefore an evaluation/reporting operation, not a
+training operation.
+
+Do not apply softmax over classes such as `0 ships`, `1 ship`, `2 ships` for
+the active heatmap path. A softmax count classifier would make each crop choose
+a discrete count bin and would discard the spatial density structure needed for
+pixel-level heatmap inference. It may be useful only as an auxiliary head in a
+future multi-task model.
+
+Bayesian Loss uses probability, but not as a softmax distribution over integer
+count classes. It constructs a posterior contribution probability from each
+pixel to each point annotation, multiplies that probability by the continuous
+predicted density, and supervises the expected count at each annotation point to
+be one. DM-Count similarly treats predicted output as a real-valued density map:
+it compares total mass for count conservation and compares normalized density
+distributions with optimal transport.
+
+## Loss References
+
+- Victor Lempitsky and Andrew Zisserman, "Learning To Count Objects in Images",
+  NeurIPS 2010. Core idea used here: estimate a density whose integral over an
+  image region gives the object count.
+  <https://papers.neurips.cc/paper/4043-learning-to-count-objects-in-images>
+- Yuhong Li, Xiaofan Zhang, and Deming Chen, "CSRNet: Dilated Convolutional
+  Neural Networks for Understanding the Highly Congested Scenes", CVPR 2018.
+  Reference baseline for CNN density-map regression and count-by-sum inference.
+  <https://arxiv.org/abs/1802.10062>
+- Zhiheng Ma, Xing Wei, Xiaopeng Hong, and Yihong Gong, "Bayesian Loss for
+  Crowd Count Estimation With Point Supervision", ICCV 2019. Motivation for
+  supervising expected count rather than trusting a strict pixelwise Gaussian
+  target everywhere.
+  <https://openaccess.thecvf.com/content_ICCV_2019/html/Ma_Bayesian_Loss_for_Crowd_Count_Estimation_With_Point_Supervision_ICCV_2019_paper.html>
+- Boyu Wang, Huidong Liu, Dimitris Samaras, and Minh Hoai Nguyen,
+  "Distribution Matching for Crowd Counting", NeurIPS 2020. Motivation for
+  explicitly separating count/mass conservation from spatial distribution
+  matching.
+  <https://proceedings.neurips.cc/paper/2020/hash/118bd558033a1016fcc82560c65cca5f-Abstract.html>
+- Haroon Idrees, Muhmmad Tayyab, Kishan Athrey, Dong Zhang, Somaya Al-Maadeed,
+  Nasir Rajpoot, and Mubarak Shah, "Composition Loss for Counting, Density Map
+  Estimation and Localization in Dense Crowds", ECCV 2018. Motivation for a
+  composed loss that jointly supports counting, density shape, and localization.
+  <https://www.ecva.net/papers/eccv_2018/papers_ECCV/html/Haroon_Idrees_Composition_Loss_for_ECCV_2018_paper.php>
+
 ## Shared Data Path
 
 ```text
