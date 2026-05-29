@@ -12,9 +12,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig, candidate_store_summary
+from .dnb_candidate_detector import DnbCandidateDetectorConfig, candidate_store_summary
 from .dnb_density_common import DensityPatchConfig, DensityTargetConfig
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_scene_partition import ScenePartition, ScenePartitionConfig, build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask
 from .run_density_smoke import DEFAULT_GEOJSON, DEFAULT_METADATA, DEFAULT_SCENE_TIF, DEFAULT_SHIPS_DB, ROOT, STEP3
@@ -39,6 +40,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-min-nodes", type=int, default=4)
     parser.add_argument("--detector-max-nodes", type=int, default=2500)
     parser.add_argument("--detector-remove-edge", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ph-downsample-factor", type=int, default=4)
+    parser.add_argument("--ph-downsample-reducer", choices=["max", "mean"], default="max")
     parser.add_argument("--parent-min-nodes", type=int, default=32)
     parser.add_argument("--child-min-nodes", type=int, default=4)
     parser.add_argument("--fallback-tile-pixels", type=int, default=96)
@@ -169,7 +172,17 @@ def main() -> int:
         remove_edge=bool(args.detector_remove_edge),
         drop_nested=False,
     )
-    store = DnbCandidateDetector(detector_config).build_store(scene, gt_count_map, valid_mask=valid_sea_mask)
+    ph_anchor_result = build_ph_anchor_store(
+        scene,
+        gt_count_map,
+        detector_config,
+        valid_mask=valid_sea_mask,
+        downsample_config=PHDownsampleConfig(
+            factor=int(args.ph_downsample_factor),
+            reducer=str(args.ph_downsample_reducer),
+        ),
+    )
+    store = ph_anchor_result.store
     patch_config = DensityPatchConfig(
         padding_pixels=int(args.halo_pixels),
         parent_min_nodes=int(args.parent_min_nodes),
@@ -199,6 +212,7 @@ def main() -> int:
         "gt_path": str(gt_path),
         "gt_count_sum": float(gt_count_map.sum()),
         "sea_mask": sea_mask_metadata,
+        "ph_downsample": ph_anchor_result.metadata,
         "detector_summary": candidate_store_summary(store),
         "partition_summary": partition_summary,
         "coverage_max": int(coverage[domain].max()) if domain.any() else 0,

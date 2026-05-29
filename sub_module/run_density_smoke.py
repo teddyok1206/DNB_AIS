@@ -27,6 +27,7 @@ from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
 from .kr_sea_mask import apply_kr_sea_mask
 from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches
+from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,6 +93,15 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
     for source_key, target_key in detector_map.items():
         if source_key in detector and detector[source_key] is not None:
             defaults[target_key] = detector[source_key]
+
+    ph_downsample = config.get("ph_downsample", {})
+    ph_downsample_map = {
+        "factor": "ph_downsample_factor",
+        "reducer": "ph_downsample_reducer",
+    }
+    for source_key, target_key in ph_downsample_map.items():
+        if source_key in ph_downsample and ph_downsample[source_key] is not None:
+            defaults[target_key] = ph_downsample[source_key]
 
     patching = config.get("patching", {})
     patching_map = {
@@ -323,6 +333,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-lifetime-limit", type=float, default=0.0)
     parser.add_argument("--detector-lifetime-limit-fraction", type=float, default=1.001)
     parser.add_argument("--detector-drop-nested", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--ph-downsample-factor", type=int, default=1)
+    parser.add_argument("--ph-downsample-reducer", choices=["max", "mean"], default="max")
     parser.add_argument("--preview-dir", type=Path, default=None)
     parser.add_argument("--preview-patches", type=int, default=3)
     return parser
@@ -436,7 +448,17 @@ def main(argv: list[str] | None = None) -> int:
         remove_edge=bool(args.detector_remove_edge),
         drop_nested=bool(args.detector_drop_nested),
     )
-    store = DnbCandidateDetector(detector_config).build_store(scene, gt_count_map, valid_mask=valid_sea_mask)
+    ph_anchor_result = build_ph_anchor_store(
+        scene,
+        gt_count_map,
+        detector_config,
+        valid_mask=valid_sea_mask,
+        downsample_config=PHDownsampleConfig(
+            factor=int(args.ph_downsample_factor),
+            reducer=str(args.ph_downsample_reducer),
+        ),
+    )
+    store = ph_anchor_result.store
 
     patch_config = DensityPatchConfig(
         padding_pixels=int(args.padding_pixels),
@@ -515,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
         "gt_point_count": int(len(gt_points)),
         "gt_count_sum": float(gt_count_map.sum()),
         "sea_mask": sea_mask_result,
+        "ph_downsample": ph_anchor_result.metadata,
         "partitioning_enabled": bool(args.partitioning),
         "partition_summary": partition_summary,
         "detector_summary": candidate_store_summary(store),

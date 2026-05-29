@@ -49,6 +49,13 @@ from .dnb_scene_partition import (
     build_partitioned_density_patches,
     build_scene_partitions,
 )
+from .dnb_ph_downsample import (
+    PHAnchorStoreResult,
+    PHDownsampleConfig,
+    build_ph_anchor_store,
+    downsample_scene_for_ph,
+    upsample_cluster_store,
+)
 
 __all__ = [
     "DruidCluster",
@@ -90,4 +97,9 @@ __all__ = [
     "ScenePartitionConfig",
     "build_partitioned_density_patches",
     "build_scene_partitions",
+    "PHAnchorStoreResult",
+    "PHDownsampleConfig",
+    "build_ph_anchor_store",
+    "downsample_scene_for_ph",
+    "upsample_cluster_store",
 ]

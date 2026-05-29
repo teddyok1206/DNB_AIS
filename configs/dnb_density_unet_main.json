@@ -27,6 +27,11 @@
     "remove_edge": false,
     "drop_nested": false
   },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
   "patching": {
     "padding_pixels": 16,
     "size_divisor": 16,

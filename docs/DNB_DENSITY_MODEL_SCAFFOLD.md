@@ -170,6 +170,27 @@ raw_count_sum = 160.0
 target_density_sum = 160.0
 ```
 
+For true full-scene input, PH anchor extraction is downsampled before being
+projected back to the full-resolution grid. This keeps target/loss/partition
+ownership on the original pixels while avoiding full-resolution PH runtime.
+
+Current full-scene smoke result on `A2025001_1754_021.tif` with
+`ph_downsample.factor=4`, `ph_downsample.reducer=max`:
+
+```text
+masked_scene_shape = 2495 x 3638
+ph_downsampled_shape = 624 x 910
+runtime = 43.06s
+partition_count = 687
+ph_anchor_count = 376
+fallback_grid_count = 311
+valid_sea_pixels = 3640885
+missed_valid_pixels = 0
+overlap_valid_pixels = 0
+gt_count_sum_in_scene_crop = 5380.0
+target_density_sum_inside_kr_sea_mask = 3467.0
+```
+
 ## Archival Baselines
 
 `MaskedDilatedDensityNet` and the old GAT direction remain in the repository as references. The active implementation path is U-Net only until the PH hierarchy coverage and target policy are stable.
