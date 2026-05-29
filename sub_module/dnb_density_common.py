@@ -342,6 +342,7 @@ def build_density_patches(
     gt_count_map: np.ndarray,
     cluster_store: DruidClusterStore,
     *,
+    child_cluster_store: DruidClusterStore | None = None,
     patch_config: DensityPatchConfig | None = None,
     target_config: DensityTargetConfig | None = None,
 ) -> list[DensityPatch]:
@@ -351,8 +352,9 @@ def build_density_patches(
     if gt.shape != scene.shape:
         raise ValueError(f"gt_count_map shape mismatch: {gt.shape} != {scene.shape}")
 
-    clusters = list(cluster_store.clusters)
-    parents = _select_parent_clusters(clusters, patch_config)
+    parent_clusters = list(cluster_store.clusters)
+    child_clusters = list(child_cluster_store.clusters) if child_cluster_store is not None else parent_clusters
+    parents = _select_parent_clusters(parent_clusters, patch_config)
 
     patches: list[DensityPatch] = []
     for parent in parents:
@@ -364,7 +366,7 @@ def build_density_patches(
         if int(parent_mask.sum()) < int(patch_config.min_roi_pixels):
             continue
 
-        children = _children_for_parent(parent, clusters, patch_config)
+        children = _children_for_parent(parent, child_clusters, patch_config)
         child_masks = [_mask_for_cluster(child, crop_rc) for child in children]
         if child_masks:
             child_union_mask = np.maximum.reduce(child_masks).astype(np.float32, copy=False)

@@ -7,9 +7,9 @@
   "detector": {
     "name": "DnbCandidateDetector",
     "backend": "cripser",
-    "detection_threshold": 1.0,
-    "analysis_threshold": 1.0,
-    "threshold_reference": "zero",
+    "detection_threshold": 1.5,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
     "smooth_sigma": 0.0,
     "lifetime_limit_fraction": 1.001,
     "area_limit": 12,

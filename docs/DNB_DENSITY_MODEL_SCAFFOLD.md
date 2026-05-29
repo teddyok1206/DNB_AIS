@@ -111,6 +111,25 @@ crop-level density target
 loss weight
 ```
 
+## PH Threshold Diagnostic
+
+Run the threshold/coverage sweep:
+
+```sh
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.analyze_ph_threshold_sweep \
+  --output-dir outputs/ph_threshold_sweep_median \
+  --top-n 24 \
+  --preview-patches 3
+```
+
+The current active parent PH threshold is median-referenced:
+
+```text
+detection_threshold = 1.5
+analysis_threshold = 0.25
+threshold_reference = median
+```
+
 ## Archival Baselines
 
 `MaskedDilatedDensityNet` and the old GAT direction remain in the repository as references. The active implementation path is U-Net only until the PH hierarchy coverage and target policy are stable.
