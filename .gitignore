@@ -1,0 +1,114 @@
+# OS / editor noise
+.DS_Store
+.AppleDouble
+.LSOverride
+*~
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Python / notebooks
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local environments / secrets
+.env
+.env.*
+*.env
+.venv/
+venv/
+env/
+conda-meta/
+
+# Project artifacts: keep code/config/docs in git, not generated runs
+outputs/**
+!outputs/
+!outputs/README.md
+artifacts/**
+!artifacts/
+!artifacts/README.md
+runs/
+checkpoints/
+wandb/
+mlruns/
+tensorboard/
+lightning_logs/
+
+# Model checkpoints / tensor caches
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# Remote-sensing / AIS / geospatial heavy data
+*.tif
+*.tiff
+*.TIF
+*.TIFF
+*.nc
+*.nc4
+*.hdf
+*.hdf4
+*.hdf5
+*.fits
+*.fit
+*.db
+*.sqlite
+*.sqlite3
+*.gpkg
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.qgz
+*.qgs
+
+# Generated figures / archives / papers
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Allow lightweight documentation assets when intentionally added
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+!docs/**/*.gif
+
+# Known large/raw project directories
+**/AIS/
+**/DRUID_TESTING/
+**/RESULTS_*/
+**/results_*/
+**/layers/
+**/bboxes_*/
+**/ships_radiance/
+**/cross-check/
+**/QGIS_prj_files/
+
+# Vendored/external repos should be handled deliberately, not accidentally imported
+\[3\]_DNB_AIS - (STEP 3)/DRUID/
+
+# Local notes not part of the executable pipeline
+_Meetings/
+_Readings/

@@ -1,0 +1,29 @@
+* text=auto
+
+*.py text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.csv text eol=lf
+*.ipynb text eol=lf
+
+*.pt binary
+*.pth binary
+*.ckpt binary
+*.onnx binary
+*.safetensors binary
+*.npy binary
+*.npz binary
+*.tif binary
+*.tiff binary
+*.nc binary
+*.fits binary
+*.db binary
+*.sqlite binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.zip binary

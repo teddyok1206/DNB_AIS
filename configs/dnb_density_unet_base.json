@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "experiment_family": "dnb_density_unet",
+  "description": "PH-assisted masked density U-Net baseline for DNB ship-count heatmap regression.",
+  "seed": 1,
+  "device": "mps",
+  "data": {
+    "scene_split_manifest": "outputs/DNB_GAT_v1/split_manifests/scene_split_jpss2_v1.csv",
+    "gt_geojson_dir": "[3]_DNB_AIS - (STEP 3)/bboxes_JPSS-2",
+    "metadata_csv": "[3]_DNB_AIS - (STEP 3)/metadata_JPSS-2.csv",
+    "ships_db_path": "[3]_DNB_AIS - (STEP 3)/ships.db"
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 1.0,
+    "threshold_reference": "zero",
+    "smooth_sigma": 0.0,
+    "lifetime_limit": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 12,
+    "min_nodes": 16,
+    "max_nodes": 2500,
+    "connectivity": 1,
+    "remove_edge": true,
+    "drop_nested": true
+  },
+  "patching": {
+    "crop_source": "ph_contour_bbox",
+    "padding_pixels": 16,
+    "input_channels": ["brightness", "ph_roi_mask"],
+    "loss_mask": "ph_roi_mask",
+    "assembly_mask": "ph_roi_mask"
+  },
+  "target": {
+    "name": "sum_preserving_pixel_kernel",
+    "source": "geojson_centroid_or_lonlat",
+    "kernel": "gaussian",
+    "sigma_pixels": 1.5,
+    "radius_pixels": 5,
+    "renormalize_after_roi_mask": true,
+    "per_ship_mass": 1.0
+  },
+  "model": {
+    "name": "MaskedDensityUNet",
+    "in_channels": 2,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "activation": "softplus"
+  },
+  "training": {
+    "epochs": 20,
+    "batch_size": 8,
+    "optimizer": "adamw",
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "loss": "masked_poisson_nll_or_mse_tbd",
+    "grad_clip_norm": 1.0,
+    "save_every_epochs": 1,
+    "resume_from": ""
+  },
+  "checkpointing": {
+    "root": "artifacts/dnb_density_unet",
+    "save_last": true,
+    "save_best": true,
+    "metadata_required": [
+      "git_commit",
+      "config_sha256",
+      "scene_split_manifest",
+      "target_config",
+      "model_config"
+    ]
+  }
+}
