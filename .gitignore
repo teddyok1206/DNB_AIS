@@ -86,6 +86,8 @@ lightning_logs/
 *.zip
 *.tar
 *.tar.gz
+*.tar.zst
+*.zst
 *.tgz
 *.7z
 
@@ -112,3 +114,7 @@ lightning_logs/
 # Local notes not part of the executable pipeline
 _Meetings/
 _Readings/
+
+# Archive metadata is tracked, heavy archive payloads are not.
+_archive/legacy_steps/*
+!_archive/legacy_steps/README.md
