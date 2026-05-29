@@ -175,6 +175,56 @@ SceneRaster + GeoJSON GT
 -> MaskedDensityUNet forward/backward with soft weighted loss
 ```
 
+## Scene Split Policy
+
+Train/validation/test splitting must be done by day group, not by patch.
+
+```text
+day_key = A2025DDD
+scene_key = A2025DDD_HHMM_021
+```
+
+Patch-level splitting is leakage-prone because multiple partitions from the
+same full-scene image share the same illumination, scan geometry, clouds, and
+AIS distribution. Scene-level random splitting is also weaker than day-level
+splitting because scenes from the same day are only minutes apart and can
+overlap spatially.
+
+The final intended split is:
+
+```text
+train = 250 days
+val   = 60 days
+test  = 55 days
+```
+
+Do not generate or freeze this final split until the full 365-day GeoTIFF and
+bbox-complete set is stable.
+
+For pipeline smoke testing, use the current bbox-complete snapshot plus existing
+GeoTIFF files only:
+
+```sh
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.build_density_scene_split \
+  --output-dir "[3]_DNB_AIS - (STEP 3)/outputs/density_smoke_split_10_3_2" \
+  --train-days 10 \
+  --val-days 3 \
+  --test-days 2 \
+  --seed 20260529
+```
+
+Then generate visual checks:
+
+```sh
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.visualize_density_split \
+  --scene-split-csv "[3]_DNB_AIS - (STEP 3)/outputs/density_smoke_split_10_3_2/scene_split.csv" \
+  --output-dir "[3]_DNB_AIS - (STEP 3)/outputs/density_smoke_split_10_3_2/visuals"
+```
+
+Smoke split artifacts under `outputs/` are runtime diagnostics, not final
+manifests. Keep them out of git unless a small curated metric summary is
+explicitly needed.
+
 ## Smoke Test
 
 From repository root:
