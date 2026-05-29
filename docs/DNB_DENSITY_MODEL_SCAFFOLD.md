@@ -191,6 +191,15 @@ gt_count_sum_in_scene_crop = 5380.0
 target_density_sum_inside_kr_sea_mask = 3467.0
 ```
 
+Locked active baseline as of 2026-05-29:
+
+- Use `configs/dnb_density_unet_main.json` for the main U-Net density path.
+- Keep KR sea mask as `eez + eez_12nm`, `crop_to_bounds=true`, `all_touched=true`.
+- Keep PH anchor extraction downsampled with `factor=4`, `reducer=max`.
+- Keep exact-cover partitioning as PH-anchor-first plus fallback grid.
+- Keep fallback tile size `96`, halo `16`, anchor padding `16`.
+- Do not change these defaults unless a new full-scene diagnostic improves both coverage and qualitative partition structure.
+
 ## Archival Baselines
 
 `MaskedDilatedDensityNet` and the old GAT direction remain in the repository as references. The active implementation path is U-Net only until the PH hierarchy coverage and target policy are stable.
