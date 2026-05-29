@@ -25,6 +25,7 @@ from .dnb_density_common import (
 )
 from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .kr_sea_mask import apply_kr_sea_mask
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,20 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
         defaults["model"] = role
     if "device" in config:
         defaults["device"] = config["device"]
+
+    sea_mask = config.get("sea_mask", {})
+    sea_mask_map = {
+        "enabled": "kr_eez_mask",
+        "step3_dir": "kr_eez_step3_dir",
+        "crop_to_bounds": "kr_eez_crop_to_bounds",
+        "segment_policy": "kr_eez_segment_policy",
+        "write_masked_tif": "kr_eez_write_masked_tif",
+        "output_dir": "kr_eez_mask_output_dir",
+        "all_touched": "kr_eez_all_touched",
+    }
+    for source_key, target_key in sea_mask_map.items():
+        if source_key in sea_mask and sea_mask[source_key] is not None:
+            defaults[target_key] = sea_mask[source_key]
 
     detector = config.get("detector", {})
     detector_map = {
@@ -237,6 +252,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
     parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
+    parser.add_argument("--kr-eez-mask", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--kr-eez-step3-dir", type=Path, default=STEP3)
+    parser.add_argument("--kr-eez-crop-to-bounds", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--kr-eez-segment-policy", choices=["single_scene", "largest_segment"], default="single_scene")
+    parser.add_argument("--kr-eez-write-masked-tif", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=ROOT / "outputs" / "preprocessed_scene_masks" / "density")
+    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -357,7 +379,23 @@ def main(argv: list[str] | None = None) -> int:
     seed_everything(int(args.seed))
     device = resolve_device(str(args.device))
 
-    scene = SceneRaster.load(args.scene_tif)
+    sea_mask_result: dict[str, Any] = {"enabled": False}
+    valid_sea_mask: np.ndarray | None = None
+    if bool(args.kr_eez_mask):
+        mask_result = apply_kr_sea_mask(
+            args.scene_tif,
+            step3_dir=args.kr_eez_step3_dir,
+            output_dir=args.kr_eez_mask_output_dir,
+            crop_to_bounds=bool(args.kr_eez_crop_to_bounds),
+            segment_policy=str(args.kr_eez_segment_policy),
+            write_masked_tif=bool(args.kr_eez_write_masked_tif),
+            all_touched=bool(args.kr_eez_all_touched),
+        )
+        scene = mask_result.scene
+        valid_sea_mask = mask_result.valid_mask
+        sea_mask_result = mask_result.metadata
+    else:
+        scene = SceneRaster.load(args.scene_tif)
     resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, args.gt_geojson.parent)
     gt_path = resolver.resolve_geojson(scene, args.gt_geojson)
     gt_points = resolver.load_points(gt_path)
@@ -378,7 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         remove_edge=bool(args.detector_remove_edge),
         drop_nested=bool(args.detector_drop_nested),
     )
-    store = DnbCandidateDetector(detector_config).build_store(scene, gt_count_map)
+    store = DnbCandidateDetector(detector_config).build_store(scene, gt_count_map, valid_mask=valid_sea_mask)
 
     patch_config = DensityPatchConfig(
         padding_pixels=int(args.padding_pixels),
@@ -402,7 +440,14 @@ def main(argv: list[str] | None = None) -> int:
         renormalize_after_roi_mask=bool(args.target_renormalize_after_roi_mask),
         require_source_in_roi=bool(args.target_require_source_in_roi),
     )
-    patches = build_density_patches(scene, gt_count_map, store, patch_config=patch_config, target_config=target_config)
+    patches = build_density_patches(
+        scene,
+        gt_count_map,
+        store,
+        valid_mask=valid_sea_mask,
+        patch_config=patch_config,
+        target_config=target_config,
+    )
     if not patches:
         raise RuntimeError("No density patches were built")
     preview_paths: list[str] = []
@@ -429,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
         "gt_path": str(gt_path),
         "gt_point_count": int(len(gt_points)),
         "gt_count_sum": float(gt_count_map.sum()),
+        "sea_mask": sea_mask_result,
         "detector_summary": candidate_store_summary(store),
         "patch_summary": summarize_density_patches(patches),
         "target_config": target_config.__dict__,

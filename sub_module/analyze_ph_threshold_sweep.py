@@ -16,6 +16,7 @@ import numpy as np
 from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig
 from .dnb_density_common import DensityPatch, DensityPatchConfig, DensityTargetConfig, build_density_patches
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .kr_sea_mask import apply_kr_sea_mask
 from .run_density_smoke import ROOT, STEP3, save_density_patch_previews
 
 
@@ -85,6 +86,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
     parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
+    parser.add_argument("--kr-eez-mask", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--kr-eez-step3-dir", type=Path, default=STEP3)
+    parser.add_argument("--kr-eez-crop-to-bounds", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--kr-eez-segment-policy", choices=["single_scene", "largest_segment"], default="single_scene")
+    parser.add_argument("--kr-eez-write-masked-tif", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=ROOT / "outputs" / "preprocessed_scene_masks" / "density")
+    parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "ph_threshold_sweep")
     parser.add_argument("--case", action="append", default=None, help="name,parent_detection,parent_analysis[,child_detection,child_analysis]")
     parser.add_argument("--top-n", type=int, default=24)
@@ -93,7 +101,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--parent-min-nodes", type=int, default=32)
     parser.add_argument("--child-min-nodes", type=int, default=4)
     parser.add_argument("--max-nodes", type=int, default=2500)
-    parser.add_argument("--area-limit", type=int, default=12)
+    parser.add_argument("--area-limit", type=int, default=0)
+    parser.add_argument("--detector-remove-edge", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--seed-radius-pixels", type=int, default=1)
     parser.add_argument("--attention-distance-sigma", type=float, default=4.0)
     parser.add_argument("--target-sigma", type=float, default=1.5)
@@ -119,7 +128,7 @@ def make_detector_config(args: argparse.Namespace, detection: float, analysis: f
         area_limit=int(args.area_limit),
         min_nodes=int(args.child_min_nodes),
         max_nodes=int(args.max_nodes),
-        remove_edge=True,
+        remove_edge=bool(args.detector_remove_edge),
         drop_nested=False,
     )
 
@@ -139,7 +148,7 @@ def masks_from_patches(shape: tuple[int, int], patches: list[DensityPatch]) -> d
     crop = np.zeros(shape, dtype=bool)
     for patch in patches:
         r0, r1, c0, c1 = patch.crop_rc
-        crop[r0 : r1 + 1, c0 : c1 + 1] = True
+        crop[r0 : r1 + 1, c0 : c1 + 1] |= patch.valid_mask.astype(bool)
         parent[r0 : r1 + 1, c0 : c1 + 1] |= patch.parent_mask.astype(bool)
         child[r0 : r1 + 1, c0 : c1 + 1] |= patch.child_union_mask.astype(bool)
     return {"parent": parent, "child": child, "crop": crop}
@@ -154,9 +163,10 @@ def summarize_patches(
     patches: list[DensityPatch],
     top_n: int,
     case: ThresholdCase,
+    valid_mask: np.ndarray | None = None,
 ) -> dict[str, Any]:
     top_patches = patches[: max(int(top_n), 0)]
-    scene_pixels = int(scene.height * scene.width)
+    scene_pixels = int(np.asarray(valid_mask, dtype=bool).sum()) if valid_mask is not None else int(scene.height * scene.width)
     scene_gt = float(gt_count_map.sum())
     all_masks = masks_from_patches(scene.shape, patches)
     top_masks = masks_from_patches(scene.shape, top_patches)
@@ -173,7 +183,7 @@ def summarize_patches(
     target_sums = np.array([patch.target_sum for patch in patches], dtype=np.float32) if patches else np.array([], dtype=np.float32)
     child_counts = np.array([len(patch.child_ids) for patch in patches], dtype=np.int64) if patches else np.array([], dtype=np.int64)
     parent_pixels = np.array([patch.roi_pixels for patch in patches], dtype=np.int64) if patches else np.array([], dtype=np.int64)
-    crop_pixels = np.array([patch.image.size for patch in patches], dtype=np.int64) if patches else np.array([], dtype=np.int64)
+    crop_pixels = np.array([patch.valid_pixels for patch in patches], dtype=np.int64) if patches else np.array([], dtype=np.int64)
 
     parent_candidate_gt = gt_mass(parent_candidate_mask)
     child_candidate_gt = gt_mass(child_candidate_mask)
@@ -307,7 +317,23 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cases = [parse_case(item) for item in args.case] if args.case else default_cases()
-    scene = SceneRaster.load(args.scene_tif)
+    sea_mask_metadata: dict[str, Any] = {"enabled": False}
+    valid_sea_mask: np.ndarray | None = None
+    if bool(args.kr_eez_mask):
+        mask_result = apply_kr_sea_mask(
+            args.scene_tif,
+            step3_dir=args.kr_eez_step3_dir,
+            output_dir=args.kr_eez_mask_output_dir,
+            crop_to_bounds=bool(args.kr_eez_crop_to_bounds),
+            segment_policy=str(args.kr_eez_segment_policy),
+            write_masked_tif=bool(args.kr_eez_write_masked_tif),
+            all_touched=bool(args.kr_eez_all_touched),
+        )
+        scene = mask_result.scene
+        valid_sea_mask = mask_result.valid_mask
+        sea_mask_metadata = mask_result.metadata
+    else:
+        scene = SceneRaster.load(args.scene_tif)
     resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, args.gt_geojson.parent)
     gt_path = resolver.resolve_geojson(scene, args.gt_geojson)
     gt_count_map = resolver.rasterize_counts(scene, resolver.load_points(gt_path))
@@ -334,7 +360,7 @@ def main() -> int:
     for case in cases:
         parent_store = DnbCandidateDetector(
             make_detector_config(args, case.parent_detection, case.parent_analysis, case.parent_reference)
-        ).build_store(scene, gt_count_map)
+        ).build_store(scene, gt_count_map, valid_mask=valid_sea_mask)
         if case.is_dual:
             child_store = DnbCandidateDetector(
                 make_detector_config(
@@ -343,7 +369,7 @@ def main() -> int:
                     float(case.child_analysis),
                     case.effective_child_reference,
                 )
-            ).build_store(scene, gt_count_map)
+            ).build_store(scene, gt_count_map, valid_mask=valid_sea_mask)
         else:
             child_store = parent_store
         patches = build_density_patches(
@@ -351,6 +377,7 @@ def main() -> int:
             gt_count_map,
             parent_store,
             child_cluster_store=child_store,
+            valid_mask=valid_sea_mask,
             patch_config=patch_config,
             target_config=target_config,
         )
@@ -362,7 +389,10 @@ def main() -> int:
             patches=patches,
             top_n=int(args.top_n),
             case=case,
+            valid_mask=valid_sea_mask,
         )
+        metrics["sea_mask_enabled"] = bool(sea_mask_metadata.get("enabled", False))
+        metrics["sea_mask_valid_pixels"] = int(sea_mask_metadata.get("selected_valid_pixels", scene.height * scene.width))
         rows.append(metrics)
         case_rows.append((case, patches, metrics))
 

@@ -4,6 +4,15 @@
   "role": "main",
   "description": "PH-hierarchical U-Net baseline for DNB ship-count density prediction. PH defines rigid crop/structure priors; GT target uses all crop GT without PH censoring.",
   "device": "mps",
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/preprocessed_scene_masks/density",
+    "all_touched": false
+  },
   "detector": {
     "name": "DnbCandidateDetector",
     "backend": "cripser",

@@ -38,6 +38,11 @@ from .dnb_density_models import (
     MaskedDilatedDensityNet,
     build_density_model,
 )
+from .kr_sea_mask import (
+    KRSeaMaskResult,
+    apply_kr_sea_mask,
+    load_kr_sea_geometry,
+)
 
 __all__ = [
     "DruidCluster",
@@ -72,4 +77,7 @@ __all__ = [
     "MaskedDensityUNet",
     "MaskedDilatedDensityNet",
     "build_density_model",
+    "KRSeaMaskResult",
+    "apply_kr_sea_mask",
+    "load_kr_sea_geometry",
 ]

@@ -94,8 +94,11 @@ def _component_mask(
     birth: float,
     death: float,
     connectivity: int,
+    valid_mask: np.ndarray | None = None,
 ) -> np.ndarray | None:
     mask = np.logical_and(image <= float(birth), image > float(death))
+    if valid_mask is not None:
+        mask &= np.asarray(valid_mask, dtype=bool)
     seed_r, seed_c = int(seed_rc[0]), int(seed_rc[1])
     if seed_r < 0 or seed_c < 0 or seed_r >= mask.shape[0] or seed_c >= mask.shape[1]:
         return None
@@ -149,21 +152,42 @@ class DnbCandidateDetector:
     def __init__(self, config: DnbCandidateDetectorConfig | None = None) -> None:
         self.config = config or DnbCandidateDetectorConfig()
 
-    def build_store(self, scene: SceneRaster, gt_count_map: np.ndarray | None = None) -> DruidClusterStore:
+    def build_store(
+        self,
+        scene: SceneRaster,
+        gt_count_map: np.ndarray | None = None,
+        *,
+        valid_mask: np.ndarray | None = None,
+    ) -> DruidClusterStore:
         if gt_count_map is None:
             gt_count_map = np.zeros(scene.shape, dtype=np.float32)
         if tuple(gt_count_map.shape) != tuple(scene.shape):
             raise ValueError(f"gt_count_map shape mismatch: {gt_count_map.shape} != {scene.shape}")
+        domain_mask: np.ndarray | None = None
+        if valid_mask is not None:
+            domain_mask = np.asarray(valid_mask, dtype=bool)
+            if tuple(domain_mask.shape) != tuple(scene.shape):
+                raise ValueError(f"valid_mask shape mismatch: {domain_mask.shape} != {scene.shape}")
+            if not domain_mask.any():
+                return DruidClusterStore(scene=scene, catalogue=self._empty_catalogue(), clusters=[])
 
         smooth = self._smooth(scene.image)
+        if domain_mask is not None:
+            smooth = np.where(domain_mask, smooth, 0.0).astype(np.float32, copy=False)
         background = robust_background(
-            smooth,
+            smooth[domain_mask] if domain_mask is not None else smooth,
             detection_threshold=self.config.detection_threshold,
             analysis_threshold=self.config.analysis_threshold,
             threshold_reference=self.config.threshold_reference,
         )
         candidates = self._find_candidates(smooth, background)
-        catalogue, clusters = self._build_clusters(scene, smooth, gt_count_map.astype(np.float32, copy=False), candidates)
+        catalogue, clusters = self._build_clusters(
+            scene,
+            smooth,
+            gt_count_map.astype(np.float32, copy=False),
+            candidates,
+            valid_mask=domain_mask,
+        )
         if self.config.drop_nested:
             clusters = _drop_nested(clusters)
             kept_ids = {int(cluster.cluster_id) for cluster in clusters}
@@ -260,6 +284,8 @@ class DnbCandidateDetector:
         smooth: np.ndarray,
         gt_count_map: np.ndarray,
         candidates: pd.DataFrame,
+        *,
+        valid_mask: np.ndarray | None = None,
     ) -> tuple[pd.DataFrame, list[DruidCluster]]:
         if candidates.empty:
             return self._empty_catalogue(), []
@@ -273,6 +299,7 @@ class DnbCandidateDetector:
                 birth=float(row.Birth),
                 death=float(row.Death),
                 connectivity=int(self.config.connectivity),
+                valid_mask=valid_mask,
             )
             if component is None:
                 continue

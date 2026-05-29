@@ -54,6 +54,7 @@ class DensityPatch:
     persistence_map: np.ndarray
     soft_attention: np.ndarray
     loss_weight: np.ndarray
+    valid_mask: np.ndarray
     target_density: np.ndarray
     raw_count: np.ndarray
     child_ids: list[int] = field(default_factory=list)
@@ -86,6 +87,10 @@ class DensityPatch:
     @property
     def loss_weight_sum(self) -> float:
         return float(self.loss_weight.sum())
+
+    @property
+    def valid_pixels(self) -> int:
+        return int((self.valid_mask > 0).sum())
 
 
 def _round_up(value: int, divisor: int) -> int:
@@ -143,12 +148,15 @@ def make_sum_preserving_density_target(
     raw_count: np.ndarray,
     roi_mask: np.ndarray | None,
     config: DensityTargetConfig,
+    *,
+    domain_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Create a crop-level density target.
 
     By default this does not censor GT by PH ROI. Kernels are always clipped to the
-    crop boundary and renormalized there, preserving each ship's mass inside crop.
-    The legacy ROI-censoring behavior is still available through config flags.
+    crop/domain boundary and renormalized there, preserving each ship's mass
+    inside the valid sea-domain pixels. The legacy ROI-censoring behavior is
+    still available through config flags.
     """
 
     raw = np.asarray(raw_count, dtype=np.float32)
@@ -158,6 +166,12 @@ def make_sum_preserving_density_target(
         roi = (np.asarray(roi_mask, dtype=np.float32) > 0).astype(np.float32)
     if raw.shape != roi.shape:
         raise ValueError(f"raw_count and roi_mask shape mismatch: {raw.shape} != {roi.shape}")
+    if domain_mask is None:
+        domain = np.ones_like(raw, dtype=np.float32)
+    else:
+        domain = (np.asarray(domain_mask, dtype=np.float32) > 0).astype(np.float32)
+    if raw.shape != domain.shape:
+        raise ValueError(f"raw_count and domain_mask shape mismatch: {raw.shape} != {domain.shape}")
 
     target = np.zeros_like(raw, dtype=np.float32)
     positive_rc = np.argwhere(raw > 0)
@@ -171,6 +185,8 @@ def make_sum_preserving_density_target(
     dy, dx, kernel = _gaussian_window(int(config.radius_pixels), float(config.sigma_pixels))
     height, width = raw.shape
     for src_r, src_c in positive_rc.tolist():
+        if domain[int(src_r), int(src_c)] <= 0:
+            continue
         if bool(config.require_source_in_roi) and roi[int(src_r), int(src_c)] <= 0:
             continue
         mass = float(raw[int(src_r), int(src_c)]) * float(config.per_ship_mass)
@@ -182,6 +198,7 @@ def make_sum_preserving_density_target(
         rr_valid = rr[valid]
         cc_valid = cc[valid]
         weights = kernel[valid].astype(np.float32, copy=True)
+        weights *= domain[rr_valid, cc_valid]
         if bool(config.renormalize_after_roi_mask):
             weights *= roi[rr_valid, cc_valid]
         denom = float(weights.sum())
@@ -343,6 +360,7 @@ def build_density_patches(
     cluster_store: DruidClusterStore,
     *,
     child_cluster_store: DruidClusterStore | None = None,
+    valid_mask: np.ndarray | None = None,
     patch_config: DensityPatchConfig | None = None,
     target_config: DensityTargetConfig | None = None,
 ) -> list[DensityPatch]:
@@ -351,6 +369,12 @@ def build_density_patches(
     gt = np.asarray(gt_count_map, dtype=np.float32)
     if gt.shape != scene.shape:
         raise ValueError(f"gt_count_map shape mismatch: {gt.shape} != {scene.shape}")
+    if valid_mask is None:
+        domain = np.ones(scene.shape, dtype=np.float32)
+    else:
+        domain = (np.asarray(valid_mask, dtype=np.float32) > 0).astype(np.float32)
+        if domain.shape != scene.shape:
+            raise ValueError(f"valid_mask shape mismatch: {domain.shape} != {scene.shape}")
 
     parent_clusters = list(cluster_store.clusters)
     child_clusters = list(child_cluster_store.clusters) if child_cluster_store is not None else parent_clusters
@@ -360,14 +384,15 @@ def build_density_patches(
     for parent in parents:
         crop_rc = _crop_bounds(parent.bbox_rc, scene.shape, padding_pixels=int(patch_config.padding_pixels))
         r0, r1, c0, c1 = crop_rc
-        image_crop = np.asarray(scene.image[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32)
-        raw_crop = np.asarray(gt[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32)
-        parent_mask = _mask_for_cluster(parent, crop_rc)
+        valid_crop = np.asarray(domain[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32)
+        image_crop = np.asarray(scene.image[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32) * valid_crop
+        raw_crop = np.asarray(gt[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32) * valid_crop
+        parent_mask = _mask_for_cluster(parent, crop_rc) * valid_crop
         if int(parent_mask.sum()) < int(patch_config.min_roi_pixels):
             continue
 
         children = _children_for_parent(parent, child_clusters, patch_config)
-        child_masks = [_mask_for_cluster(child, crop_rc) for child in children]
+        child_masks = [_mask_for_cluster(child, crop_rc) * valid_crop for child in children]
         if child_masks:
             child_union_mask = np.maximum.reduce(child_masks).astype(np.float32, copy=False)
         else:
@@ -380,21 +405,21 @@ def build_density_patches(
             crop_rc,
             image_crop.shape,
             radius_pixels=int(patch_config.seed_radius_pixels),
-        )
-        persistence_map = _persistence_map_for_clusters(persistence_sources, crop_rc, image_crop.shape)
+        ) * valid_crop
+        persistence_map = _persistence_map_for_clusters(persistence_sources, crop_rc, image_crop.shape) * valid_crop
         soft_attention = _soft_attention_from_masks(
             parent_mask,
             child_union_mask,
             seed_map,
             persistence_map,
             distance_sigma=float(patch_config.attention_distance_sigma),
-        )
+        ) * valid_crop
         loss_weight = _loss_weight_from_attention(
             soft_attention,
             base_weight=float(patch_config.attention_base_weight),
             ph_weight=float(patch_config.attention_ph_weight),
-        )
-        target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config)
+        ) * valid_crop
+        target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config, domain_mask=valid_crop)
         patches.append(
             DensityPatch(
                 cluster_id=int(parent.cluster_id),
@@ -408,6 +433,7 @@ def build_density_patches(
                 persistence_map=persistence_map.astype(np.float32, copy=False),
                 soft_attention=soft_attention.astype(np.float32, copy=False),
                 loss_weight=loss_weight.astype(np.float32, copy=False),
+                valid_mask=valid_crop.astype(np.float32, copy=False),
                 target_density=target.astype(np.float32, copy=False),
                 raw_count=raw_crop.astype(np.float32, copy=False),
                 child_ids=[int(child.cluster_id) for child in children],
@@ -458,6 +484,7 @@ def density_patch_collate(
         persistence = torch.from_numpy(np.asarray(patch.persistence_map, dtype=np.float32))
         attention = torch.from_numpy(np.asarray(patch.soft_attention, dtype=np.float32))
         weight = torch.from_numpy(np.asarray(patch.loss_weight, dtype=np.float32))
+        valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
 
         x[idx, 0, :h, :w] = image
@@ -473,7 +500,7 @@ def density_patch_collate(
         persistence_map[idx, 0, :h, :w] = persistence
         soft_attention[idx, 0, :h, :w] = attention
         loss_weight[idx, 0, :h, :w] = weight
-        valid_mask[idx, 0, :h, :w] = 1.0
+        valid_mask[idx, 0, :h, :w] = valid
         metadata.append(
             {
                 "cluster_id": int(patch.cluster_id),
@@ -488,6 +515,7 @@ def density_patch_collate(
                 "raw_count_sum": float(patch.raw_count_sum),
                 "target_sum": float(patch.target_sum),
                 "loss_weight_sum": float(patch.loss_weight_sum),
+                "valid_pixels": int(patch.valid_pixels),
             }
         )
 
@@ -546,6 +574,7 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
     raw_sums = np.array([patch.raw_count_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     target_sums = np.array([patch.target_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     loss_weight_sums = np.array([patch.loss_weight_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
+    valid_pixels = np.array([patch.valid_pixels for patch in patch_list], dtype=np.int64) if patch_list else np.array([], dtype=np.int64)
     return {
         "patch_count": int(len(patch_list)),
         "height_min": int(shapes[:, 0].min()) if shapes.size else 0,
@@ -562,4 +591,6 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
         "raw_count_sum": float(raw_sums.sum()) if raw_sums.size else 0.0,
         "target_density_sum": float(target_sums.sum()) if target_sums.size else 0.0,
         "loss_weight_sum": float(loss_weight_sums.sum()) if loss_weight_sums.size else 0.0,
+        "valid_pixels_total": int(valid_pixels.sum()) if valid_pixels.size else 0,
+        "valid_pixels_median": int(np.median(valid_pixels)) if valid_pixels.size else 0,
     }
