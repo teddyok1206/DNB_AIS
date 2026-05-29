@@ -85,7 +85,26 @@
     "dropout": 0.0
   },
   "training": {
-    "loss": "hierarchical_soft_weighted_mse_initial_baseline",
+    "loss": {
+      "name": "structured_density_loss",
+      "rationale": "Pixel term learns the density-map shape; patch count term enforces partition-integral ship-count conservation; multiscale local count term discourages blurry solutions that preserve only the global count; background term suppresses false density on valid ocean with no target mass.",
+      "pixel_weight": 0.55,
+      "count_weight": 0.15,
+      "local_count_weight": 0.25,
+      "background_weight": 0.05,
+      "pixel_loss": "huber",
+      "huber_delta": 0.05,
+      "count_loss": "relative_huber",
+      "count_huber_delta": 0.25,
+      "count_normalizer": 1.0,
+      "local_count_windows": [
+        16,
+        32,
+        64
+      ],
+      "local_count_stride_factor": 2,
+      "background_target_threshold": 1.0e-6
+    },
     "batch_size": 8,
     "epochs": 20,
     "lr": 0.001,

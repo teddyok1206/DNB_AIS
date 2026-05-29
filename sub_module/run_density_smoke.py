@@ -23,6 +23,7 @@ from .dnb_density_common import (
     move_density_batch_to_device,
     summarize_density_patches,
 )
+from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
 from .kr_sea_mask import apply_kr_sea_mask
@@ -39,7 +40,11 @@ DEFAULT_SHIPS_DB = STEP3 / "ships.db"
 
 
 def _loss_name_from_config(value: Any) -> str:
+    if isinstance(value, dict):
+        return _loss_name_from_config(value.get("name", "structured_density_loss"))
     normalized = str(value).strip().lower()
+    if "structured" in normalized or "composite" in normalized:
+        return "structured"
     if "poisson" in normalized:
         return "poisson_nll"
     if "mse" in normalized:
@@ -166,7 +171,29 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
         if source_key in training:
             defaults[target_key] = training[source_key]
     if "loss" in training:
-        defaults["loss"] = _loss_name_from_config(training["loss"])
+        loss_config = training["loss"]
+        defaults["loss"] = _loss_name_from_config(loss_config)
+        if isinstance(loss_config, dict):
+            loss_map = {
+                "pixel_weight": "loss_pixel_weight",
+                "count_weight": "loss_count_weight",
+                "local_count_weight": "loss_local_count_weight",
+                "background_weight": "loss_background_weight",
+                "pixel_loss": "loss_pixel_loss",
+                "huber_delta": "loss_huber_delta",
+                "count_loss": "loss_count_loss",
+                "count_huber_delta": "loss_count_huber_delta",
+                "count_normalizer": "loss_count_normalizer",
+                "local_count_windows": "loss_local_count_windows",
+                "local_count_stride_factor": "loss_local_count_stride_factor",
+                "background_target_threshold": "loss_background_target_threshold",
+            }
+            for source_key, target_key in loss_map.items():
+                if source_key in loss_config and loss_config[source_key] is not None:
+                    value = loss_config[source_key]
+                    if source_key == "local_count_windows" and not isinstance(value, str):
+                        value = ",".join(str(int(item)) for item in value)
+                    defaults[target_key] = value
     return defaults
 
 
@@ -314,7 +341,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--lr", type=float, default=1.0e-3)
     parser.add_argument("--weight-decay", type=float, default=1.0e-4)
-    parser.add_argument("--loss", choices=["mse", "poisson_nll"], default="mse")
+    parser.add_argument("--loss", choices=["mse", "poisson_nll", "structured"], default="mse")
+    parser.add_argument("--loss-pixel-weight", type=float, default=0.55)
+    parser.add_argument("--loss-count-weight", type=float, default=0.15)
+    parser.add_argument("--loss-local-count-weight", type=float, default=0.25)
+    parser.add_argument("--loss-background-weight", type=float, default=0.05)
+    parser.add_argument("--loss-pixel-loss", choices=["mse", "mae", "huber"], default="huber")
+    parser.add_argument("--loss-huber-delta", type=float, default=0.05)
+    parser.add_argument("--loss-count-loss", choices=["relative_mse", "relative_mae", "relative_huber"], default="relative_huber")
+    parser.add_argument("--loss-count-huber-delta", type=float, default=0.25)
+    parser.add_argument("--loss-count-normalizer", type=float, default=1.0)
+    parser.add_argument("--loss-local-count-windows", default="16,32,64")
+    parser.add_argument("--loss-local-count-stride-factor", type=int, default=2)
+    parser.add_argument("--loss-background-target-threshold", type=float, default=1.0e-6)
     parser.add_argument("--target-sigma", type=float, default=1.5)
     parser.add_argument("--target-radius", type=int, default=5)
     parser.add_argument("--target-per-ship-mass", type=float, default=1.0)
@@ -346,6 +385,31 @@ def make_models_to_run(model_arg: str) -> list[str]:
     return [model_arg]
 
 
+def parse_loss_windows(value: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in str(value).split(",") if part.strip()]
+    if not parts:
+        raise ValueError("loss local-count windows must contain at least one integer")
+    return tuple(int(part) for part in parts)
+
+
+def structured_loss_config_from_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "name": "structured_density_loss",
+        "pixel_weight": float(args.loss_pixel_weight),
+        "count_weight": float(args.loss_count_weight),
+        "local_count_weight": float(args.loss_local_count_weight),
+        "background_weight": float(args.loss_background_weight),
+        "pixel_loss": str(args.loss_pixel_loss),
+        "huber_delta": float(args.loss_huber_delta),
+        "count_loss": str(args.loss_count_loss),
+        "count_huber_delta": float(args.loss_count_huber_delta),
+        "count_normalizer": float(args.loss_count_normalizer),
+        "local_count_windows": parse_loss_windows(str(args.loss_local_count_windows)),
+        "local_count_stride_factor": int(args.loss_local_count_stride_factor),
+        "background_target_threshold": float(args.loss_background_target_threshold),
+    }
+
+
 def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespace, device: torch.device) -> dict[str, Any]:
     model_kwargs: dict[str, Any] = {
         "in_channels": int(args.input_channels),
@@ -362,7 +426,11 @@ def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespac
         **model_kwargs,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr), weight_decay=float(args.weight_decay))
+    structured_loss = None
+    if str(args.loss) == "structured":
+        structured_loss = build_density_loss(structured_loss_config_from_args(args))
     losses: list[float] = []
+    loss_components: list[dict[str, float]] = []
     pred_sum = 0.0
     target_sum = 0.0
     roi_pixels = 0.0
@@ -375,7 +443,11 @@ def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespac
             batch = move_density_batch_to_device(batch, device)
             optimizer.zero_grad(set_to_none=True)
             pred = model(batch["x"])
-            if str(args.loss) == "poisson_nll":
+            if structured_loss is not None:
+                loss = structured_loss(pred, batch)
+                if structured_loss.last_components:
+                    loss_components.append(dict(structured_loss.last_components))
+            elif str(args.loss) == "poisson_nll":
                 loss = masked_poisson_nll_loss(pred, batch["target"], batch["loss_weight"])
             else:
                 loss = masked_mse_loss(pred, batch["target"], batch["loss_weight"])
@@ -395,7 +467,9 @@ def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespac
         **count_parameters(model),
         "device": str(device),
         "loss_name": str(args.loss),
+        "loss_config": structured_loss_config_from_args(args) if structured_loss is not None else None,
         "losses": losses,
+        "loss_components": loss_components,
         "last_pred_shape": last_shape,
         "last_valid_pred_sum": pred_sum,
         "last_valid_target_sum": target_sum,

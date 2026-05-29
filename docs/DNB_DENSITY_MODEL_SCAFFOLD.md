@@ -44,13 +44,52 @@ This keeps GT points that are inside the parent crop even when strict PH masks m
 
 ## Loss Policy
 
-The loss uses the valid crop, with stronger weight near PH hierarchy structure:
+The active loss is a structured density loss:
+
+```text
+L = 0.55 * L_pixel
+  + 0.15 * L_count
+  + 0.25 * L_local_count
+  + 0.05 * L_background
+```
+
+`L_pixel` is a PH-soft-attention weighted Huber density loss over the valid
+crop:
 
 ```text
 loss_weight = valid_crop * (0.25 + 0.75 * ph_soft_attention)
 ```
 
-This preserves supervision outside strict PH masks while still telling the U-Net where PH thinks the important light structure is.
+This preserves supervision outside strict PH masks while still telling the
+U-Net where PH thinks the important light structure is.
+
+`L_count` enforces the physical integral constraint:
+
+```text
+sum(pred_density over owned valid pixels) ~= sum(target_density over owned valid pixels)
+```
+
+Because active full-scene partitioning gives every valid sea pixel exactly one
+owner, this is a partition-level count-conservation term, not just an arbitrary
+regularizer. The default uses relative Huber error normalized by
+`target_count + 1`, so dense and sparse partitions both contribute without
+exploding on empty partitions.
+
+`L_local_count` applies the same integral-count idea over multiscale local
+windows:
+
+```text
+windows = 16, 32, 64 pixels
+stride = window / 2
+```
+
+This term is the logical bridge between pixelwise density fitting and pure total
+count fitting: it discourages solutions that match the partition total count but
+spread the density into a blurry or physically misplaced heatmap.
+
+`L_background` penalizes predicted density on valid ocean pixels whose target
+density is effectively zero. This keeps fallback-grid background partitions from
+becoming unconstrained false-positive areas.
 
 ## Shared Data Path
 
