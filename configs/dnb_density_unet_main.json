@@ -1,8 +1,8 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "experiment_family": "dnb_density_heatmap",
   "role": "main",
-  "description": "PH-masked U-Net/ResUNet baseline for DNB ship-count density prediction.",
+  "description": "PH-hierarchical U-Net baseline for DNB ship-count density prediction. PH defines rigid crop/structure priors; GT target uses all crop GT without PH censoring.",
   "device": "mps",
   "detector": {
     "name": "DnbCandidateDetector",
@@ -13,27 +13,44 @@
     "smooth_sigma": 0.0,
     "lifetime_limit_fraction": 1.001,
     "area_limit": 12,
-    "min_nodes": 16,
+    "min_nodes": 4,
     "max_nodes": 2500,
-    "drop_nested": true
+    "drop_nested": false
   },
   "patching": {
     "padding_pixels": 16,
     "size_divisor": 16,
-    "input_channels": ["brightness", "ph_roi_mask"],
-    "loss_mask": "ph_roi_mask"
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "attention_distance_sigma": 4.0,
+    "attention_base_weight": 0.25,
+    "attention_ph_weight": 0.75,
+    "input_channels": [
+      "brightness",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention"
+    ],
+    "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
   },
   "target": {
     "kernel": "gaussian",
     "sigma_pixels": 1.5,
     "radius_pixels": 5,
-    "renormalize_after_roi_mask": true,
-    "require_source_in_roi": true,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
     "per_ship_mass": 1.0
   },
   "model": {
     "name": "MaskedDensityUNet",
-    "in_channels": 2,
+    "in_channels": 6,
     "out_channels": 1,
     "base_channels": 32,
     "depth": 4,
@@ -41,7 +58,7 @@
     "dropout": 0.0
   },
   "training": {
-    "loss": "masked_mse_initial_baseline",
+    "loss": "hierarchical_soft_weighted_mse_initial_baseline",
     "batch_size": 8,
     "epochs": 20,
     "lr": 0.001,

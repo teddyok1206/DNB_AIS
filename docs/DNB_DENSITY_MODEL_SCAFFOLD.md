@@ -1,35 +1,68 @@
 # DNB Density Model Scaffold
 
-This scaffold provides two supervised 2D density heatmap models that share the same PH-mask data path.
+This scaffold now uses the PH hierarchy as a rigid region/structure prior and trains a U-Net density regressor on crop-level targets.
 
-## Models
+## Active Direction
 
-- Main: `MaskedDensityUNet`, a small U-Net/ResUNet-style image-to-density model.
-- Fast: `MaskedDilatedDensityNet`, a CSRNet-inspired dilated CNN that keeps full resolution and is cheaper to run.
+- Active model: `MaskedDensityUNet`.
+- Input: 6-channel PH-hierarchical DNB crop.
+- Target: crop-level sum-preserving ship-count density map.
+- Loss: soft PH-attention weighted loss over the valid crop.
+- Fast dilated CNN and GAT are retained only as design records or future references; they are not the active path.
 
-Both models consume:
+## U-Net Input Channels
 
 ```text
 channel 0: normalized DNB brightness crop
-channel 1: PH ROI mask
+channel 1: parent PH mask
+channel 2: child PH union mask
+channel 3: PH seed map
+channel 4: PH persistence score map
+channel 5: PH soft attention map
 ```
 
-Both models output:
+## Target Policy
+
+PH no longer censors the GT target.
 
 ```text
-1-channel non-negative ship-count density heatmap
+crop 내부 모든 GT point 사용
+-> Gaussian density kernel 생성
+-> crop boundary 밖으로 나간 kernel만 제거
+-> 남은 kernel을 sum-preserving renormalize
+-> target density에 누적
 ```
+
+Default target flags:
+
+```text
+require_source_in_roi = false
+renormalize_after_roi_mask = false
+```
+
+This keeps GT points that are inside the parent crop even when strict PH masks miss them.
+
+## Loss Policy
+
+The loss uses the valid crop, with stronger weight near PH hierarchy structure:
+
+```text
+loss_weight = valid_crop * (0.25 + 0.75 * ph_soft_attention)
+```
+
+This preserves supervision outside strict PH masks while still telling the U-Net where PH thinks the important light structure is.
 
 ## Shared Data Path
 
 ```text
 SceneRaster + GeoJSON GT
 -> raw count map
--> DnbCandidateDetector PH contours
--> rectangular crop around PH bbox + padding
--> ROI mask from PH contour pixels
--> sum-preserving Gaussian target inside ROI mask
--> masked loss inside ROI mask only
+-> DnbCandidateDetector with drop_nested=false
+-> outer PH components selected as parent crops
+-> contained PH components assigned as children
+-> parent/child/seed/persistence/attention maps generated
+-> crop-level sum-preserving Gaussian target from all crop GT
+-> MaskedDensityUNet forward/backward with soft weighted loss
 ```
 
 ## Smoke Test
@@ -37,49 +70,47 @@ SceneRaster + GeoJSON GT
 From repository root:
 
 ```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --model both --steps 2 --max-patches 24
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_hierarchical_unet_smoke --steps 2 --max-patches 24
 ```
 
-Using the main config:
+Equivalent generic runner:
 
 ```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --config configs/dnb_density_unet_main.json
-```
-
-Using the fast config:
-
-```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --config configs/dnb_density_dilated_fast.json
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --config configs/dnb_density_unet_main.json --model main --steps 2 --max-patches 24
 ```
 
 From `[3]_DNB_AIS - (STEP 3)`:
 
 ```sh
-PYTHONPATH=.. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --model both --steps 2 --max-patches 24
+PYTHONPATH=.. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_hierarchical_unet_smoke --steps 2 --max-patches 24
 ```
 
-Run only the main model:
+## Visual Preview
+
+Generate PNG previews of the 6 U-Net input channels plus target/loss maps:
 
 ```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --model main
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_hierarchical_unet_smoke \
+  --steps 1 \
+  --max-patches 8 \
+  --preview-dir outputs/hierarchical_unet_preview \
+  --preview-patches 3
 ```
 
-Equivalent main-only runner:
+The preview images show:
 
-```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_main_smoke
+```text
+brightness
+parent PH mask
+child PH union
+seed map
+persistence map
+soft attention
+raw GT count
+crop-level density target
+loss weight
 ```
 
-Run only the fast model:
+## Archival Baselines
 
-```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_smoke --model fast
-```
-
-Equivalent fast-only runner:
-
-```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.run_density_fast_smoke
-```
-
-The smoke test does not write checkpoints. It prints a JSON report with detector summary, patch summary, model parameter count, tensor shapes, and short train-step losses.
+`MaskedDilatedDensityNet` and the old GAT direction remain in the repository as references. The active implementation path is U-Net only until the PH hierarchy coverage and target policy are stable.

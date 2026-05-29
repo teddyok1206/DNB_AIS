@@ -11,7 +11,7 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class DensityModelConfig:
     name: str = "MaskedDensityUNet"
-    in_channels: int = 2
+    in_channels: int = 6
     out_channels: int = 1
     base_channels: int = 32
     depth: int = 4
@@ -68,11 +68,11 @@ class UpBlock(nn.Module):
 
 
 class MaskedDensityUNet(nn.Module):
-    """Small U-Net/ResUNet for PH-masked DNB density regression."""
+    """Small U-Net/ResUNet for PH-hierarchical DNB density regression."""
 
     def __init__(
         self,
-        in_channels: int = 2,
+        in_channels: int = 6,
         out_channels: int = 1,
         base_channels: int = 32,
         depth: int = 4,
@@ -129,11 +129,11 @@ class DilatedResidualBlock(nn.Module):
 
 
 class MaskedDilatedDensityNet(nn.Module):
-    """CSRNet-inspired fast density baseline with dilated convolutions only."""
+    """Archival fast density baseline; current pipeline uses MaskedDensityUNet."""
 
     def __init__(
         self,
-        in_channels: int = 2,
+        in_channels: int = 6,
         out_channels: int = 1,
         base_channels: int = 32,
         dilations: tuple[int, ...] = (1, 2, 4, 8, 4, 2),

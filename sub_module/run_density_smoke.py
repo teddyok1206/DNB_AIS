@@ -74,13 +74,26 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
         "lifetime_limit_fraction": "detector_lifetime_limit_fraction",
     }
     for source_key, target_key in detector_map.items():
-        if source_key in detector:
+        if source_key in detector and detector[source_key] is not None:
             defaults[target_key] = detector[source_key]
 
     patching = config.get("patching", {})
-    patching_map = {"padding_pixels": "padding_pixels", "size_divisor": "size_divisor"}
+    patching_map = {
+        "padding_pixels": "padding_pixels",
+        "size_divisor": "size_divisor",
+        "sort_by": "sort_by",
+        "parent_min_nodes": "parent_min_nodes",
+        "parent_max_nodes": "parent_max_nodes",
+        "child_min_nodes": "child_min_nodes",
+        "child_max_nodes": "child_max_nodes",
+        "max_children": "max_children",
+        "seed_radius_pixels": "seed_radius_pixels",
+        "attention_distance_sigma": "attention_distance_sigma",
+        "attention_base_weight": "attention_base_weight",
+        "attention_ph_weight": "attention_ph_weight",
+    }
     for source_key, target_key in patching_map.items():
-        if source_key in patching:
+        if source_key in patching and patching[source_key] is not None:
             defaults[target_key] = patching[source_key]
 
     target = config.get("target", {})
@@ -92,7 +105,7 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
         "require_source_in_roi": "target_require_source_in_roi",
     }
     for source_key, target_key in target_map.items():
-        if source_key in target:
+        if source_key in target and target[source_key] is not None:
             defaults[target_key] = target[source_key]
 
     model = config.get("model", {})
@@ -101,9 +114,10 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
         defaults["model"] = "main"
     elif "dilated" in model_name or "csrnet" in model_name:
         defaults["model"] = "fast"
-    for key in ["base_channels", "depth", "activation", "dropout"]:
-        if key in model:
-            defaults[key] = model[key]
+    for key in ["in_channels", "base_channels", "depth", "activation", "dropout"]:
+        if key in model and model[key] is not None:
+            target_key = "input_channels" if key == "in_channels" else key
+            defaults[target_key] = model[key]
     if "dilations" in model:
         defaults["dilations"] = ",".join(str(int(v)) for v in model["dilations"])
 
@@ -169,10 +183,56 @@ def parse_dilations(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in parts)
 
 
+def save_density_patch_previews(
+    patches: list[Any],
+    *,
+    scene_key: str,
+    output_dir: Path,
+    limit: int,
+) -> list[str]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[str] = []
+    for patch in patches[: max(int(limit), 0)]:
+        panels = [
+            ("brightness", patch.image, "magma"),
+            ("parent PH mask", patch.parent_mask, "gray"),
+            ("child PH union", patch.child_union_mask, "gray"),
+            ("seed map", patch.seed_map, "gray"),
+            ("persistence map", patch.persistence_map, "viridis"),
+            ("soft attention", patch.soft_attention, "viridis"),
+            ("raw GT count", patch.raw_count, "viridis"),
+            ("crop-level density target", patch.target_density, "viridis"),
+            ("loss weight", patch.loss_weight, "viridis"),
+        ]
+        fig, axes = plt.subplots(3, 3, figsize=(14, 11), constrained_layout=True)
+        for ax, (title, arr, cmap) in zip(axes.ravel(), panels):
+            im = ax.imshow(arr, cmap=cmap)
+            ax.set_title(title)
+            ax.axis("off")
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        fig.suptitle(
+            (
+                f"{scene_key} | parent={patch.cluster_id} | children={len(patch.child_ids)} | "
+                f"raw_sum={patch.raw_count_sum:.1f} | target_sum={patch.target_sum:.1f}"
+            ),
+            fontsize=13,
+        )
+        path = output_dir / f"{scene_key}_parent_{int(patch.cluster_id)}_hierarchical_unet_preview.png"
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        paths.append(str(path))
+    return paths
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Smoke-test PH-masked density models on a DNB batch scene.")
+    parser = argparse.ArgumentParser(description="Smoke-test PH-hierarchical U-Net density models on a DNB batch scene.")
     parser.add_argument("--config", type=Path, default=None, help="Optional JSON config used as parser defaults.")
-    parser.add_argument("--model", choices=["main", "fast", "both"], default="both")
+    parser.add_argument("--model", choices=["main", "fast", "both"], default="main")
     parser.add_argument("--scene-tif", type=Path, default=DEFAULT_SCENE_TIF)
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
     parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
@@ -184,6 +244,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-patches", type=int, default=24)
     parser.add_argument("--padding-pixels", type=int, default=16)
     parser.add_argument("--size-divisor", type=int, default=16)
+    parser.add_argument("--sort-by", choices=["lifetime", "cluster_id", "node_count"], default="node_count")
+    parser.add_argument("--parent-min-nodes", type=int, default=32)
+    parser.add_argument("--parent-max-nodes", type=int, default=0)
+    parser.add_argument("--child-min-nodes", type=int, default=4)
+    parser.add_argument("--child-max-nodes", type=int, default=0)
+    parser.add_argument("--max-children", type=int, default=0)
+    parser.add_argument("--seed-radius-pixels", type=int, default=1)
+    parser.add_argument("--attention-distance-sigma", type=float, default=4.0)
+    parser.add_argument("--attention-base-weight", type=float, default=0.25)
+    parser.add_argument("--attention-ph-weight", type=float, default=0.75)
+    parser.add_argument("--input-channels", type=int, default=6)
     parser.add_argument("--base-channels", type=int, default=24)
     parser.add_argument("--depth", type=int, default=3)
     parser.add_argument("--dilations", default="1,2,4,8,4,2")
@@ -195,8 +266,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-sigma", type=float, default=1.5)
     parser.add_argument("--target-radius", type=int, default=5)
     parser.add_argument("--target-per-ship-mass", type=float, default=1.0)
-    parser.add_argument("--target-renormalize-after-roi-mask", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--target-require-source-in-roi", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--target-renormalize-after-roi-mask", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--target-require-source-in-roi", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--detector-detection-threshold", type=float, default=1.0)
     parser.add_argument("--detector-analysis-threshold", type=float, default=1.0)
     parser.add_argument("--detector-threshold-reference", choices=["zero", "median"], default="zero")
@@ -209,7 +280,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detector-remove-edge", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--detector-lifetime-limit", type=float, default=0.0)
     parser.add_argument("--detector-lifetime-limit-fraction", type=float, default=1.001)
-    parser.add_argument("--detector-drop-nested", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--detector-drop-nested", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--preview-dir", type=Path, default=None)
+    parser.add_argument("--preview-patches", type=int, default=3)
     return parser
 
 
@@ -221,7 +294,7 @@ def make_models_to_run(model_arg: str) -> list[str]:
 
 def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespace, device: torch.device) -> dict[str, Any]:
     model_kwargs: dict[str, Any] = {
-        "in_channels": 2,
+        "in_channels": int(args.input_channels),
         "out_channels": 1,
         "base_channels": int(args.base_channels),
         "depth": int(args.depth),
@@ -249,15 +322,15 @@ def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespac
             optimizer.zero_grad(set_to_none=True)
             pred = model(batch["x"])
             if str(args.loss) == "poisson_nll":
-                loss = masked_poisson_nll_loss(pred, batch["target"], batch["roi_mask"])
+                loss = masked_poisson_nll_loss(pred, batch["target"], batch["loss_weight"])
             else:
-                loss = masked_mse_loss(pred, batch["target"], batch["roi_mask"])
+                loss = masked_mse_loss(pred, batch["target"], batch["loss_weight"])
             loss.backward()
             optimizer.step()
             losses.append(float(loss.detach().cpu()))
-            pred_sum = float((pred.detach() * batch["roi_mask"]).sum().cpu())
-            target_sum = float((batch["target"] * batch["roi_mask"]).sum().cpu())
-            roi_pixels = float(batch["roi_mask"].sum().cpu())
+            pred_sum = float((pred.detach() * batch["valid_mask"]).sum().cpu())
+            target_sum = float((batch["target"] * batch["valid_mask"]).sum().cpu())
+            roi_pixels = float(batch["loss_weight"].sum().cpu())
             last_shape = [int(v) for v in pred.shape]
             step += 1
             if step >= int(args.steps):
@@ -270,9 +343,9 @@ def run_model_smoke(model_name: str, loader: DataLoader, args: argparse.Namespac
         "loss_name": str(args.loss),
         "losses": losses,
         "last_pred_shape": last_shape,
-        "last_roi_pred_sum": pred_sum,
-        "last_roi_target_sum": target_sum,
-        "last_roi_pixels": roi_pixels,
+        "last_valid_pred_sum": pred_sum,
+        "last_valid_target_sum": target_sum,
+        "last_loss_weight_sum": roi_pixels,
     }
     if hasattr(model, "architecture_dict"):
         result["architecture"] = model.architecture_dict()
@@ -311,6 +384,16 @@ def main(argv: list[str] | None = None) -> int:
         padding_pixels=int(args.padding_pixels),
         size_divisor=int(args.size_divisor),
         max_patches=int(args.max_patches) if int(args.max_patches) > 0 else None,
+        sort_by=str(args.sort_by),
+        parent_min_nodes=int(args.parent_min_nodes),
+        parent_max_nodes=int(args.parent_max_nodes) if int(args.parent_max_nodes) > 0 else None,
+        child_min_nodes=int(args.child_min_nodes),
+        child_max_nodes=int(args.child_max_nodes) if int(args.child_max_nodes) > 0 else None,
+        max_children=int(args.max_children) if int(args.max_children) > 0 else None,
+        seed_radius_pixels=int(args.seed_radius_pixels),
+        attention_distance_sigma=float(args.attention_distance_sigma),
+        attention_base_weight=float(args.attention_base_weight),
+        attention_ph_weight=float(args.attention_ph_weight),
     )
     target_config = DensityTargetConfig(
         sigma_pixels=float(args.target_sigma),
@@ -322,6 +405,14 @@ def main(argv: list[str] | None = None) -> int:
     patches = build_density_patches(scene, gt_count_map, store, patch_config=patch_config, target_config=target_config)
     if not patches:
         raise RuntimeError("No density patches were built")
+    preview_paths: list[str] = []
+    if args.preview_dir is not None:
+        preview_paths = save_density_patch_previews(
+            patches,
+            scene_key=scene.key,
+            output_dir=args.preview_dir,
+            limit=int(args.preview_patches),
+        )
 
     dataset = DensityPatchDataset(patches)
     loader = DataLoader(
@@ -342,6 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         "patch_summary": summarize_density_patches(patches),
         "target_config": target_config.__dict__,
         "patch_config": patch_config.__dict__,
+        "preview_paths": preview_paths,
         "model_results": model_results,
     }
     print(json.dumps(report, ensure_ascii=False, indent=2))

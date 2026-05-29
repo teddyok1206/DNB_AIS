@@ -1,8 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "experiment_family": "dnb_density_heatmap",
   "role": "fast",
-  "description": "CSRNet-inspired fast dilated CNN baseline for DNB ship-count density prediction.",
+  "status": "archival_record_only",
+  "description": "CSRNet-inspired fast dilated CNN baseline kept as a record. Current active direction uses PH-hierarchical U-Net only.",
   "device": "mps",
   "detector": {
     "name": "DnbCandidateDetector",
@@ -13,27 +14,37 @@
     "smooth_sigma": 0.0,
     "lifetime_limit_fraction": 1.001,
     "area_limit": 12,
-    "min_nodes": 16,
+    "min_nodes": 4,
     "max_nodes": 2500,
-    "drop_nested": true
+    "drop_nested": false
   },
   "patching": {
     "padding_pixels": 16,
     "size_divisor": 16,
-    "input_channels": ["brightness", "ph_roi_mask"],
-    "loss_mask": "ph_roi_mask"
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "child_min_nodes": 4,
+    "input_channels": [
+      "brightness",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention"
+    ],
+    "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
   },
   "target": {
     "kernel": "gaussian",
     "sigma_pixels": 1.5,
     "radius_pixels": 5,
-    "renormalize_after_roi_mask": true,
-    "require_source_in_roi": true,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
     "per_ship_mass": 1.0
   },
   "model": {
     "name": "MaskedDilatedDensityNet",
-    "in_channels": 2,
+    "in_channels": 6,
     "out_channels": 1,
     "base_channels": 32,
     "dilations": [1, 2, 4, 8, 4, 2],
@@ -41,7 +52,7 @@
     "dropout": 0.0
   },
   "training": {
-    "loss": "masked_mse_initial_baseline",
+    "loss": "hierarchical_soft_weighted_mse_archival_baseline",
     "batch_size": 8,
     "epochs": 20,
     "lr": 0.001,
