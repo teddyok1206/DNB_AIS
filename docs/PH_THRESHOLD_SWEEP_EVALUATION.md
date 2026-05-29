@@ -78,6 +78,7 @@ threshold_reference = median
 detection_threshold = 1.0
 analysis_threshold = 0.25
 area_limit = 0
+remove_edge = false
 padding_pixels = 16
 ```
 
@@ -86,6 +87,7 @@ Reasoning:
 - It keeps top24 crop GT recall high at `0.78125` on the test scene.
 - It keeps all-crop GT recall at `0.9375` without exploding parent patch count.
 - Removing `area_limit` increases child hierarchy detail from `13` to `27` child components.
+- Keeping edge components raises available PH/GT information for the full-scene feature path. In the quick check, `remove_edge=false` raised candidate GT mass from `93` to `113` and child components from `27` to `76`.
 - It is simpler than the dual-threshold path while the rest of the training pipeline is still being stabilized.
 
 The dual-threshold path is still useful later if we want sharper child/seed maps without changing parent crop coverage.

@@ -129,7 +129,27 @@ detection_threshold = 1.0
 analysis_threshold = 0.25
 threshold_reference = median
 area_limit = 0
+remove_edge = false
 ```
+
+`remove_edge=false` is intentional for the active full-scene feature path: edge-touching PH components are kept as model information instead of being deleted.
+
+## Full-Scene Partitioning Direction
+
+The first split should be computed on the full scene, not on already-cropped tiles.
+
+```text
+full DNB scene
+-> full-scene PH hierarchy with remove_edge=false
+-> sea-domain partition that covers the full valid ocean area
+-> each partition becomes a rectangular model crop with padding/halo
+-> U-Net consumes brightness + PH hierarchy channels
+-> overlapping predictions are merged back to the full-scene density map
+```
+
+The partitioning step should use PH results as adaptive anchors, but it must not leave ocean pixels uncovered. This means PH components are region-proposal seeds, not the full partition by themselves. Background ocean between PH components still needs assignment to a partition, for example by bounding-box expansion, Voronoi/watershed-style assignment from PH seeds, or a fixed fallback grid where PH coverage is weak.
+
+Current implementation is still patch/proposal based. The next pipeline stage should add this full-scene partitioner before real training/inference loops.
 
 ## Archival Baselines
 
