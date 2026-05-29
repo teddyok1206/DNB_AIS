@@ -177,6 +177,7 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
             loss_map = {
                 "pixel_weight": "loss_pixel_weight",
                 "count_weight": "loss_count_weight",
+                "batch_count_weight": "loss_batch_count_weight",
                 "local_count_weight": "loss_local_count_weight",
                 "background_weight": "loss_background_weight",
                 "pixel_loss": "loss_pixel_loss",
@@ -342,9 +343,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lr", type=float, default=1.0e-3)
     parser.add_argument("--weight-decay", type=float, default=1.0e-4)
     parser.add_argument("--loss", choices=["mse", "poisson_nll", "structured"], default="mse")
-    parser.add_argument("--loss-pixel-weight", type=float, default=0.55)
-    parser.add_argument("--loss-count-weight", type=float, default=0.15)
-    parser.add_argument("--loss-local-count-weight", type=float, default=0.25)
+    parser.add_argument("--loss-pixel-weight", type=float, default=0.45)
+    parser.add_argument("--loss-count-weight", type=float, default=0.22)
+    parser.add_argument("--loss-batch-count-weight", type=float, default=0.08)
+    parser.add_argument("--loss-local-count-weight", type=float, default=0.20)
     parser.add_argument("--loss-background-weight", type=float, default=0.05)
     parser.add_argument("--loss-pixel-loss", choices=["mse", "mae", "huber"], default="huber")
     parser.add_argument("--loss-huber-delta", type=float, default=0.05)
@@ -397,6 +399,7 @@ def structured_loss_config_from_args(args: argparse.Namespace) -> dict[str, Any]
         "name": "structured_density_loss",
         "pixel_weight": float(args.loss_pixel_weight),
         "count_weight": float(args.loss_count_weight),
+        "batch_count_weight": float(args.loss_batch_count_weight),
         "local_count_weight": float(args.loss_local_count_weight),
         "background_weight": float(args.loss_background_weight),
         "pixel_loss": str(args.loss_pixel_loss),

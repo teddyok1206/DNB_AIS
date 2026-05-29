@@ -87,10 +87,11 @@
   "training": {
     "loss": {
       "name": "structured_density_loss",
-      "rationale": "Pixel term learns the density-map shape; patch count term enforces partition-integral ship-count conservation; multiscale local count term discourages blurry solutions that preserve only the global count; background term suppresses false density on valid ocean with no target mass.",
-      "pixel_weight": 0.55,
-      "count_weight": 0.15,
-      "local_count_weight": 0.25,
+      "rationale": "Pixel term learns the density-map shape; partition count and batch count terms enforce density-integral ship-count conservation; multiscale local count term discourages blurry solutions that preserve only the global count; background term suppresses false density on valid ocean with no target mass.",
+      "pixel_weight": 0.45,
+      "count_weight": 0.22,
+      "batch_count_weight": 0.08,
+      "local_count_weight": 0.20,
       "background_weight": 0.05,
       "pixel_loss": "huber",
       "huber_delta": 0.05,

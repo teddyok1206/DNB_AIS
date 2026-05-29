@@ -11,9 +11,10 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class DensityLossConfig:
     name: str = "structured_density_loss"
-    pixel_weight: float = 0.55
-    count_weight: float = 0.15
-    local_count_weight: float = 0.25
+    pixel_weight: float = 0.45
+    count_weight: float = 0.22
+    batch_count_weight: float = 0.08
+    local_count_weight: float = 0.20
     background_weight: float = 0.05
     pixel_loss: str = "huber"
     huber_delta: float = 0.05
@@ -83,18 +84,15 @@ def weighted_density_loss(
     return _masked_mean(element, weight, float(eps))
 
 
-def count_conservation_loss(
-    pred: torch.Tensor,
-    target: torch.Tensor,
-    valid_mask: torch.Tensor,
+def _relative_count_error_loss(
+    pred_count: torch.Tensor,
+    target_count: torch.Tensor,
     *,
     loss_name: str,
     huber_delta: float,
     normalizer: float,
     eps: float,
 ) -> torch.Tensor:
-    pred_count = (pred * valid_mask).flatten(1).sum(dim=1)
-    target_count = (target * valid_mask).flatten(1).sum(dim=1)
     denom = target_count.detach() + float(normalizer)
     error = (pred_count - target_count) / torch.clamp(denom, min=float(eps))
 
@@ -108,6 +106,50 @@ def count_conservation_loss(
     else:
         raise ValueError(f"Unsupported count loss: {loss_name}")
     return loss.mean()
+
+
+def count_conservation_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    loss_name: str,
+    huber_delta: float,
+    normalizer: float,
+    eps: float,
+) -> torch.Tensor:
+    pred_count = (pred * valid_mask).flatten(1).sum(dim=1)
+    target_count = (target * valid_mask).flatten(1).sum(dim=1)
+    return _relative_count_error_loss(
+        pred_count,
+        target_count,
+        loss_name=loss_name,
+        huber_delta=float(huber_delta),
+        normalizer=float(normalizer),
+        eps=float(eps),
+    )
+
+
+def batch_count_calibration_loss(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    loss_name: str,
+    huber_delta: float,
+    normalizer: float,
+    eps: float,
+) -> torch.Tensor:
+    pred_count = (pred * valid_mask).sum().reshape(1)
+    target_count = (target * valid_mask).sum().reshape(1)
+    return _relative_count_error_loss(
+        pred_count,
+        target_count,
+        loss_name=loss_name,
+        huber_delta=float(huber_delta),
+        normalizer=float(normalizer),
+        eps=float(eps),
+    )
 
 
 def local_count_conservation_loss(
@@ -210,6 +252,15 @@ class StructuredDensityLoss(nn.Module):
             normalizer=float(cfg.count_normalizer),
             eps=float(cfg.eps),
         )
+        batch_count = batch_count_calibration_loss(
+            pred,
+            target,
+            valid_mask,
+            loss_name=cfg.count_loss,
+            huber_delta=float(cfg.count_huber_delta),
+            normalizer=float(cfg.count_normalizer),
+            eps=float(cfg.eps),
+        )
         local = local_count_conservation_loss(
             pred,
             target,
@@ -231,6 +282,7 @@ class StructuredDensityLoss(nn.Module):
         total = (
             float(cfg.pixel_weight) * pixel
             + float(cfg.count_weight) * count
+            + float(cfg.batch_count_weight) * batch_count
             + float(cfg.local_count_weight) * local
             + float(cfg.background_weight) * background
         )
@@ -239,10 +291,12 @@ class StructuredDensityLoss(nn.Module):
                 "loss_total": float(total.detach().cpu()),
                 "loss_pixel": float(pixel.detach().cpu()),
                 "loss_count": float(count.detach().cpu()),
+                "loss_batch_count": float(batch_count.detach().cpu()),
                 "loss_local_count": float(local.detach().cpu()),
                 "loss_background": float(background.detach().cpu()),
                 "loss_weight_pixel": float(cfg.pixel_weight),
                 "loss_weight_count": float(cfg.count_weight),
+                "loss_weight_batch_count": float(cfg.batch_count_weight),
                 "loss_weight_local_count": float(cfg.local_count_weight),
                 "loss_weight_background": float(cfg.background_weight),
             }

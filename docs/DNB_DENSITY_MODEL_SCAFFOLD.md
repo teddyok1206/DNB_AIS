@@ -47,9 +47,10 @@ This keeps GT points that are inside the parent crop even when strict PH masks m
 The active loss is a structured density loss:
 
 ```text
-L = 0.55 * L_pixel
-  + 0.15 * L_count
-  + 0.25 * L_local_count
+L = 0.45 * L_pixel
+  + 0.22 * L_partition_count
+  + 0.08 * L_batch_count
+  + 0.20 * L_local_count
   + 0.05 * L_background
 ```
 
@@ -63,7 +64,8 @@ loss_weight = valid_crop * (0.25 + 0.75 * ph_soft_attention)
 This preserves supervision outside strict PH masks while still telling the
 U-Net where PH thinks the important light structure is.
 
-`L_count` enforces the physical integral constraint:
+`L_partition_count` enforces the physical integral constraint on each owned
+partition crop:
 
 ```text
 sum(pred_density over owned valid pixels) ~= sum(target_density over owned valid pixels)
@@ -74,6 +76,18 @@ owner, this is a partition-level count-conservation term, not just an arbitrary
 regularizer. The default uses relative Huber error normalized by
 `target_count + 1`, so dense and sparse partitions both contribute without
 exploding on empty partitions.
+
+`L_batch_count` applies the same integral constraint after summing all owned
+pixels in the mini-batch:
+
+```text
+sum_batch(pred_density over owned valid pixels) ~= sum_batch(target_density over owned valid pixels)
+```
+
+This is a count-calibration term. It directly encodes the density-map definition
+that the heatmap integral should recover the number of ships, and it reduces
+systematic over-counting or under-counting even when per-pixel density shape is
+reasonable.
 
 `L_local_count` applies the same integral-count idea over multiscale local
 windows:
