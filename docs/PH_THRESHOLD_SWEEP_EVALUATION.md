@@ -75,16 +75,17 @@ Use the median-referenced single detector as the active default first:
 
 ```text
 threshold_reference = median
-detection_threshold = 1.5
+detection_threshold = 1.0
 analysis_threshold = 0.25
+area_limit = 0
 padding_pixels = 16
 ```
 
 Reasoning:
 
-- It improves top24 crop GT recall from `0.60` to `0.8063` on the test scene.
-- It keeps all-crop GT recall at `0.9375` without exploding patch count.
-- It preserves enough child hierarchy for U-Net feature channels.
+- It keeps top24 crop GT recall high at `0.78125` on the test scene.
+- It keeps all-crop GT recall at `0.9375` without exploding parent patch count.
+- Removing `area_limit` increases child hierarchy detail from `13` to `27` child components.
 - It is simpler than the dual-threshold path while the rest of the training pipeline is still being stabilized.
 
 The dual-threshold path is still useful later if we want sharper child/seed maps without changing parent crop coverage.

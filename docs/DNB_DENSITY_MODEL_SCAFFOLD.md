@@ -125,9 +125,10 @@ PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m sub_module.an
 The current active parent PH threshold is median-referenced:
 
 ```text
-detection_threshold = 1.5
+detection_threshold = 1.0
 analysis_threshold = 0.25
 threshold_reference = median
+area_limit = 0
 ```
 
 ## Archival Baselines
