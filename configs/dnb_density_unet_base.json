@@ -5,7 +5,7 @@
   "seed": 1,
   "device": "mps",
   "data": {
-    "scene_split_manifest": "outputs/DNB_GAT_v1/split_manifests/scene_split_jpss2_v1.csv",
+    "scene_split_manifest": "outputs/dnb_density/splits/density_smoke_split_10_3_2/scene_split.csv",
     "gt_geojson_dir": "[3]_DNB_AIS - (STEP 3)/bboxes_JPSS-2",
     "metadata_csv": "[3]_DNB_AIS - (STEP 3)/metadata_JPSS-2.csv",
     "ships_db_path": "[3]_DNB_AIS - (STEP 3)/ships.db"

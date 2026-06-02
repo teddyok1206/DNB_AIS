@@ -1,19 +1,9 @@
-from .dnb_gat_pipeline import (
+from .dnb_pipeline_core import (
     DruidCluster,
     DruidClusterStore,
-    DruidConfig,
-    GATDensityRegressor,
-    GraphBuilder,
-    GraphConfig,
     GroundTruthResolver,
-    SceneAssembler,
     SceneRaster,
-    TrainingConfig,
     extract_scene_key,
-    make_overlay_rgb,
-    predict_graphs,
-    resolve_device,
-    train_gat,
 )
 from .dnb_candidate_detector import (
     DnbCandidateDetector,
@@ -33,6 +23,7 @@ from .dnb_density_common import (
     summarize_density_patches,
 )
 from .dnb_density_models import (
+    CountSpatialDensityUNet,
     DensityModelConfig,
     MaskedDensityUNet,
     MaskedDilatedDensityNet,
@@ -60,19 +51,9 @@ from .dnb_ph_downsample import (
 __all__ = [
     "DruidCluster",
     "DruidClusterStore",
-    "DruidConfig",
-    "GATDensityRegressor",
-    "GraphBuilder",
-    "GraphConfig",
     "GroundTruthResolver",
-    "SceneAssembler",
     "SceneRaster",
-    "TrainingConfig",
     "extract_scene_key",
-    "make_overlay_rgb",
-    "predict_graphs",
-    "resolve_device",
-    "train_gat",
     "DnbCandidateDetector",
     "DnbCandidateDetectorConfig",
     "candidate_store_summary",
@@ -87,6 +68,7 @@ __all__ = [
     "move_density_batch_to_device",
     "summarize_density_patches",
     "DensityModelConfig",
+    "CountSpatialDensityUNet",
     "MaskedDensityUNet",
     "MaskedDilatedDensityNet",
     "build_density_model",

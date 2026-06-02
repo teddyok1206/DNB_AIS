@@ -8,7 +8,7 @@ This scaffold now uses the PH hierarchy as a rigid region/structure prior and tr
 - Input: 6-channel PH-hierarchical DNB crop.
 - Target: crop-level sum-preserving ship-count density map.
 - Loss: soft PH-attention weighted loss over the valid crop.
-- Fast dilated CNN and GAT are retained only as design records or future references; they are not the active path.
+- GAT is retired from the active code path. The repository now commits to the PH-assisted U-Net density pipeline.
 
 ## U-Net Input Channels
 
@@ -394,4 +394,4 @@ Locked active baseline as of 2026-05-29:
 
 ## Archival Baselines
 
-`MaskedDilatedDensityNet` and the old GAT direction remain in the repository as references. The active implementation path is U-Net only until the PH hierarchy coverage and target policy are stable.
+`MaskedDilatedDensityNet` remains only as a lightweight architectural reference. The old GAT implementation has been removed from active source; U-Net is the committed implementation path.

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from scipy.ndimage import distance_transform_edt
 from torch.utils.data import Dataset
 
-from .dnb_gat_pipeline import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
 
 
 @dataclass(frozen=True)

@@ -8,15 +8,15 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter, label
 
-from .dnb_gat_pipeline import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
 
 
 @dataclass
 class DnbCandidateDetectorConfig:
     """DRUID-inspired candidate extraction for DNB ship scenes.
 
-    The output intentionally reuses DruidClusterStore so the downstream graph/model
-    pipeline can consume either backend without changing its contract.
+    The output reuses the PH cluster container consumed by the U-Net density
+    pipeline.
     """
 
     backend: str = "cripser"

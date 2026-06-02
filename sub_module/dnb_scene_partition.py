@@ -21,7 +21,7 @@ from .dnb_density_common import (
     _soft_attention_from_masks,
     make_sum_preserving_density_target,
 )
-from .dnb_gat_pipeline import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
 
 
 @dataclass(frozen=True)

@@ -17,7 +17,7 @@ from shapely.geometry import mapping
 from shapely.ops import unary_union
 from shapely.validation import make_valid
 
-from .dnb_gat_pipeline import SceneRaster
+from .dnb_pipeline_core import SceneRaster
 
 
 @dataclass(frozen=True)

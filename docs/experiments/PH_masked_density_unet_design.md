@@ -1,10 +1,10 @@
 # PH Masked Density U-Net Design
 
-PH mask를 FCN에 적용할 때는 "이미지를 irregular하게 만드는" 게 아니라, rectangular crop 위에 `valid pixel mask`를 얹는 방식이 GAT와 가장 가깝다. GAT에서 contour 내부 픽셀만 node였던 것처럼, FCN에서는 contour 내부 픽셀만 loss와 scene assembly에 참여시키면 된다.
+PH mask를 FCN에 적용할 때는 "이미지를 irregular하게 만드는" 게 아니라, rectangular crop 위에 `valid pixel mask`를 얹는 방식이 맞다. 아래 graph-style 비교는 historical analogy이며, active implementation은 U-Net only이다.
 
-## GAT와 대응
+## Historical Graph Analogy
 
-GAT 방식:
+Retired graph-style 방식:
 
 ```text
 PH contour 내부 pixel -> graph node
@@ -53,11 +53,11 @@ scene_pred[roi_pixels] += pred[roi_pixels] * lifetime_weight
 scene_weight[roi_pixels] += lifetime_weight
 ```
 
-즉 GAT에서 `node가 아닌 픽셀은 아예 학습/예측 대상이 아니었던 것`처럼, FCN에서는 `mask 밖 픽셀은 loss와 최종 heatmap 반영에서 제외`한다.
+즉 graph-style 방식에서 `node가 아닌 픽셀은 아예 학습/예측 대상이 아니었던 것`처럼, FCN에서는 `mask 밖 픽셀은 loss와 최종 heatmap 반영에서 제외`한다.
 
 ## GT kernel도 mask 안에서만
 
-GAT의 `edge-decay`는 graph 내부 node로만 퍼졌다. FCN에서도 동일하게 하려면:
+Retired graph-style `edge-decay`는 graph 내부 node로만 퍼졌다. FCN에서도 동일하게 하려면:
 
 ```text
 ship kernel 생성
@@ -109,8 +109,8 @@ output = roi_mask 내부만 사용
 PH가 같은 위상학적 island로 본 것이므로 같은 sample에서 같이 처리
 ```
 
-그래서 GAT 때와 거의 같은 철학이다.
+그래서 retired graph-style 방식과 같은 철학을 rectangular U-Net crop에서 구현하는 형태다.
 
 ## 결론
 
-`PH contour mask`는 FCN/U-Net에서 `ROI mask + masked loss + masked scene assembly`로 적용하면 된다. 이게 GAT 방식의 가장 직접적인 FCN 버전이다.
+`PH contour mask`는 FCN/U-Net에서 `ROI mask + masked loss + masked scene assembly`로 적용하면 된다.

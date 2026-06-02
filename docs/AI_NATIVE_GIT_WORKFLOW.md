@@ -73,7 +73,7 @@ Before committing:
 ```sh
 ./scripts/git_ai_status.sh
 python -m py_compile sub_module/*.py
-python scripts/strip_notebook_outputs.py --check DNB_GAT_v1.ipynb
+python scripts/strip_notebook_outputs.py --check "[3]_DNB_AIS - (STEP 3)/[C]_metadata_analyzer.ipynb"
 ```
 
 Do not commit `.pt`, `.tif`, `.nc`, `.db`, `.npy`, `.npz`, or generated `outputs/` files.

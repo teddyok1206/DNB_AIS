@@ -14,7 +14,7 @@ import numpy as np
 
 from .dnb_candidate_detector import DnbCandidateDetectorConfig, candidate_store_summary
 from .dnb_density_common import DensityPatchConfig, DensityTargetConfig
-from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_scene_partition import ScenePartition, ScenePartitionConfig, build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask

@@ -22,7 +22,7 @@ from .run_density_split_smoke_train import (
     read_json,
 )
 from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3
-from .dnb_gat_pipeline import GroundTruthResolver
+from .dnb_pipeline_core import GroundTruthResolver
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

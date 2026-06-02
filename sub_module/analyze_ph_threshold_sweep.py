@@ -15,7 +15,7 @@ import numpy as np
 
 from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig
 from .dnb_density_common import DensityPatch, DensityPatchConfig, DensityTargetConfig, build_density_patches
-from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .kr_sea_mask import apply_kr_sea_mask
 from .run_density_smoke import ROOT, STEP3, save_density_patch_previews
 

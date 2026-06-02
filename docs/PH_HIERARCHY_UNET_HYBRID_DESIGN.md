@@ -158,16 +158,16 @@ crop 큼
 - U-Net은 crop 내부 spatial density map 복원
 - fast dilated CNN은 같은 입력을 더 싸게 처리하는 baseline
 
-GAT도 살릴 수 있습니다.
+GAT-style graph refinement was considered, but it is retired from the active path.
 
 ```text
 PH child/seed = graph node
 parent crop = image context
 CNN feature at node location = node feature
-GAT = node 간 관계 보정
+graph refinement = node 간 관계 보정
 ```
 
-하지만 이건 2단계입니다. 지금은 FCN/U-Net scaffold에 PH hierarchy channels를 넣는 게 우선입니다.
+The current implementation direction is U-Net only: PH hierarchy channels provide the structure prior directly to the image-to-density model.
 
 **내 추천 next implementation**
 다음 작업은 `DensityPatch`를 확장하는 겁니다.

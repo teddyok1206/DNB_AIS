@@ -25,7 +25,7 @@ from .dnb_density_common import (
 )
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
-from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_project_paths import DENSITY_OUTPUT_ROOT, project_path
 from .kr_sea_mask import apply_kr_sea_mask
 from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches

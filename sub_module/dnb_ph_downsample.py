@@ -10,7 +10,7 @@ from affine import Affine
 from rasterio.transform import array_bounds
 
 from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig
-from .dnb_gat_pipeline import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
 
 
 @dataclass(frozen=True)

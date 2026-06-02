@@ -16,7 +16,7 @@ Keep this map updated when the canonical path layout changes.
 
 ## Active Step 3 Workspace
 
-`[3]_DNB_AIS - (STEP 3)` is intentionally kept in place for now. Multiple scripts still resolve this path directly, including density split tooling and GAT notebook generation utilities.
+`[3]_DNB_AIS - (STEP 3)` is intentionally kept in place for now. Multiple scripts still resolve this path directly, including density split tooling and STEP3 operational jobs.
 
 Important active items:
 
