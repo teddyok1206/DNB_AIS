@@ -221,6 +221,13 @@ def loss_config_from_config(config: dict[str, Any]) -> dict[str, Any]:
     return dict(loss) if isinstance(loss, dict) else {"name": str(loss)}
 
 
+def input_channels_from_config(config: dict[str, Any]) -> list[str] | None:
+    channels = config.get("patching", {}).get("input_channels")
+    if channels is None:
+        return None
+    return [str(channel) for channel in channels]
+
+
 def build_model_from_config(config: dict[str, Any]) -> torch.nn.Module:
     model_config = dict(config.get("model", {}))
     name = str(model_config.pop("name", "MaskedDensityUNet"))
@@ -392,13 +399,24 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
     return prob * output["count"].reshape(-1, 1, 1, 1)
 
 
-def make_loader(patches: list[DensityPatch], batch_size: int, size_divisor: int, shuffle: bool, num_workers: int) -> DataLoader:
+def make_loader(
+    patches: list[DensityPatch],
+    batch_size: int,
+    size_divisor: int,
+    shuffle: bool,
+    num_workers: int,
+    input_channels: list[str] | None,
+) -> DataLoader:
     return DataLoader(
         DensityPatchDataset(patches),
         batch_size=int(batch_size),
         shuffle=bool(shuffle),
         num_workers=int(num_workers),
-        collate_fn=lambda batch: density_patch_collate(batch, size_divisor=int(size_divisor)),
+        collate_fn=lambda batch: density_patch_collate(
+            batch,
+            size_divisor=int(size_divisor),
+            input_channels=input_channels,
+        ),
     )
 
 
@@ -421,8 +439,16 @@ def run_batches(
     optimizer: torch.optim.Optimizer | None = None,
     num_workers: int = 0,
     grad_clip_norm: float = 0.0,
+    input_channels: list[str] | None = None,
 ) -> dict[str, Any]:
-    loader = make_loader(patches, batch_size, size_divisor, shuffle=train, num_workers=num_workers)
+    loader = make_loader(
+        patches,
+        batch_size,
+        size_divisor,
+        shuffle=train,
+        num_workers=num_workers,
+        input_channels=input_channels,
+    )
     losses: list[float] = []
     components: list[dict[str, float]] = []
     pred_sum = 0.0
@@ -591,12 +617,20 @@ def save_inference_previews(
     batch_size: int,
     size_divisor: int,
     limit: int,
+    input_channels: list[str] | None,
 ) -> list[str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
     if int(limit) <= 0 or not patches:
         return paths
-    loader = make_loader(patches[: int(limit)], batch_size, size_divisor, shuffle=False, num_workers=0)
+    loader = make_loader(
+        patches[: int(limit)],
+        batch_size,
+        size_divisor,
+        shuffle=False,
+        num_workers=0,
+        input_channels=input_channels,
+    )
     model.eval()
     saved = 0
     with torch.no_grad():
@@ -665,6 +699,7 @@ def main(argv: list[str] | None = None) -> int:
         weight_decay=float(args.weight_decay if args.weight_decay is not None else training.get("weight_decay", 1.0e-4)),
     )
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
+    input_channels = input_channels_from_config(config)
     grad_clip_norm = float(training.get("grad_clip_norm", 0.0) or 0.0)
 
     all_scene_results: list[SceneBuildResult] = []
@@ -700,6 +735,7 @@ def main(argv: list[str] | None = None) -> int:
             optimizer=optimizer,
             num_workers=int(args.num_workers),
             grad_clip_norm=grad_clip_norm,
+            input_channels=input_channels,
         )
         val_metrics = run_batches(
             model=model,
@@ -710,6 +746,7 @@ def main(argv: list[str] | None = None) -> int:
             device=device,
             train=False,
             num_workers=int(args.num_workers),
+            input_channels=input_channels,
         )
         epoch_metrics = {"epoch": int(epoch + 1), "train": train_metrics, "val": val_metrics}
         train_history.append(epoch_metrics)
@@ -724,6 +761,7 @@ def main(argv: list[str] | None = None) -> int:
         device=device,
         train=False,
         num_workers=int(args.num_workers),
+        input_channels=input_channels,
     )
     preview_paths = save_inference_previews(
         model=model,
@@ -733,6 +771,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=int(args.batch_size),
         size_divisor=size_divisor,
         limit=int(args.preview_patches),
+        input_channels=input_channels,
     )
 
     summary = {
@@ -745,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
         "seed": int(args.seed),
         "epochs": int(args.epochs),
         "batch_size": int(args.batch_size),
+        "input_channels": input_channels,
         "grad_clip_norm": float(grad_clip_norm),
         "smoke_filters": {
             "skip_ph_anchor_zero": bool(args.skip_ph_anchor_zero),

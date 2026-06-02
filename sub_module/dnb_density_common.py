@@ -11,6 +11,55 @@ from torch.utils.data import Dataset
 
 from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
 
+DEFAULT_INPUT_CHANNELS = (
+    "brightness",
+    "parent_ph_mask",
+    "child_union_mask",
+    "ph_seed_map",
+    "ph_persistence_map",
+    "ph_soft_attention",
+)
+
+
+def inverse_radiance_from_arctan_encoded(
+    encoded: np.ndarray,
+    *,
+    scale: float = 1.0e-9,
+) -> np.ndarray:
+    """Invert the STEP3 arctan DNB encoding without clipping or log scaling."""
+
+    arr = np.asarray(encoded, dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        inverse = float(scale) * np.tan((np.pi / 2.0) * arr)
+    return inverse.astype(np.float32, copy=False)
+
+
+def _channel_array_for_patch(patch: "DensityPatch", channel_name: str) -> np.ndarray:
+    normalized = str(channel_name).strip().lower()
+    if normalized in {"brightness", "encoded_brightness", "arctan_brightness"}:
+        return patch.image
+    if normalized in {"inverse_radiance", "raw_inverse_radiance", "radiance"}:
+        return inverse_radiance_from_arctan_encoded(patch.image)
+    if normalized in {"parent_ph_mask", "parent_mask", "roi_mask", "ph_roi_mask"}:
+        return patch.parent_mask
+    if normalized in {"child_ph_union_mask", "child_union_mask"}:
+        return patch.child_union_mask
+    if normalized in {"ph_seed_map", "seed_map"}:
+        return patch.seed_map
+    if normalized in {"ph_persistence_map", "persistence_map"}:
+        return patch.persistence_map
+    if normalized in {"ph_soft_attention", "soft_attention"}:
+        return patch.soft_attention
+    if normalized in {"loss_weight"}:
+        return patch.loss_weight
+    if normalized in {"valid_mask", "owner_mask"}:
+        return patch.valid_mask
+    if normalized in {"target_density", "target"}:
+        return patch.target_density
+    if normalized in {"raw_count"}:
+        return patch.raw_count
+    raise ValueError(f"Unsupported density input channel: {channel_name}")
+
 
 @dataclass(frozen=True)
 class DensityTargetConfig:
@@ -460,14 +509,18 @@ def density_patch_collate(
     batch: list[DensityPatch],
     *,
     size_divisor: int = 16,
+    input_channels: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     if not batch:
         raise ValueError("empty density patch batch")
+    channel_names = tuple(input_channels) if input_channels is not None else DEFAULT_INPUT_CHANNELS
+    if not channel_names:
+        raise ValueError("input_channels must contain at least one channel")
     max_h = _round_up(max(p.image.shape[0] for p in batch), int(size_divisor))
     max_w = _round_up(max(p.image.shape[1] for p in batch), int(size_divisor))
     batch_size = len(batch)
 
-    x = torch.zeros((batch_size, 6, max_h, max_w), dtype=torch.float32)
+    x = torch.zeros((batch_size, len(channel_names), max_h, max_w), dtype=torch.float32)
     target = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     parent_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     child_union_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
@@ -490,12 +543,11 @@ def density_patch_collate(
         valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
 
-        x[idx, 0, :h, :w] = image
-        x[idx, 1, :h, :w] = parent
-        x[idx, 2, :h, :w] = child
-        x[idx, 3, :h, :w] = seed
-        x[idx, 4, :h, :w] = persistence
-        x[idx, 5, :h, :w] = attention
+        for channel_idx, channel_name in enumerate(channel_names):
+            channel_arr = _channel_array_for_patch(patch, str(channel_name))
+            if tuple(channel_arr.shape) != tuple(patch.shape):
+                raise ValueError(f"channel {channel_name} shape mismatch: {channel_arr.shape} != {patch.shape}")
+            x[idx, channel_idx, :h, :w] = torch.from_numpy(np.asarray(channel_arr, dtype=np.float32))
         target[idx, 0, :h, :w] = y
         parent_mask[idx, 0, :h, :w] = parent
         child_union_mask[idx, 0, :h, :w] = child
@@ -522,11 +574,13 @@ def density_patch_collate(
                 "target_sum": float(patch.target_sum),
                 "loss_weight_sum": float(patch.loss_weight_sum),
                 "valid_pixels": int(patch.valid_pixels),
+                "input_channels": [str(name) for name in channel_names],
             }
         )
 
     return {
         "x": x,
+        "input_channels": [str(name) for name in channel_names],
         "target": target,
         "parent_mask": parent_mask,
         "roi_mask": parent_mask,

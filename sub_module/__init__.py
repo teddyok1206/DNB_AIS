@@ -25,6 +25,7 @@ from .dnb_density_common import (
 from .dnb_density_models import (
     CountSpatialDensityUNet,
     DensityModelConfig,
+    DualRadianceCountSpatialUNet,
     MaskedDensityUNet,
     MaskedDilatedDensityNet,
     build_density_model,
@@ -69,6 +70,7 @@ __all__ = [
     "summarize_density_patches",
     "DensityModelConfig",
     "CountSpatialDensityUNet",
+    "DualRadianceCountSpatialUNet",
     "MaskedDensityUNet",
     "MaskedDilatedDensityNet",
     "build_density_model",

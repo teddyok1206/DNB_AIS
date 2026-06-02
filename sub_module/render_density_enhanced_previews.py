@@ -19,6 +19,7 @@ from .run_density_split_smoke_train import (
     SceneSplitRecord,
     build_scene,
     infer_density_from_output,
+    input_channels_from_config,
     read_json,
 )
 from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3
@@ -188,10 +189,11 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = args.output_dir.expanduser().resolve() if args.output_dir else run_dir / "enhanced_previews"
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
+    input_channels = input_channels_from_config(config)
     rows: list[dict[str, Any]] = []
     with torch.no_grad():
         for idx, patch in enumerate(patches):
-            batch = density_patch_collate([patch], size_divisor=size_divisor)
+            batch = density_patch_collate([patch], size_divisor=size_divisor, input_channels=input_channels)
             batch = move_density_batch_to_device(batch, device)
             output = model(batch["x"])
             pred = infer_density_from_output(output, batch).detach().cpu().numpy()[0, 0]
