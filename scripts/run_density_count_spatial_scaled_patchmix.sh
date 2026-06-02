@@ -7,6 +7,7 @@ RUN_TAG="${RUN_TAG:-count_spatial_patchmix64_$(date +%Y%m%d_%H%M%S)}"
 
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-0}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/mplcache}"
 
 SPLIT_DIR="${SPLIT_DIR:-${ROOT}/outputs/dnb_density/splits/density_smoke_split_10_3_2}"
