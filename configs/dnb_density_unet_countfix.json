@@ -1,0 +1,123 @@
+{
+  "schema_version": 2,
+  "experiment_family": "dnb_density_heatmap",
+  "role": "main",
+  "status": "pilot_count_collapse_fix",
+  "locked_on": "2026-05-29",
+  "locked_decision": "Use KR EEZ+12nm all_touched sea mask, factor-4 max-pooled PH anchor extraction, PH-anchor-first exact-cover sea partitioning, and fallback grid ownership for all remaining valid sea pixels.",
+  "description": "PH-hierarchical U-Net baseline with log-count, foreground-positive, and positive-local density loss terms to prevent near-zero count collapse.",
+  "device": "mps",
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/preprocessed_scene_masks/density",
+    "all_touched": true
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 0,
+    "min_nodes": 4,
+    "max_nodes": 2500,
+    "remove_edge": false,
+    "drop_nested": false
+  },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
+  "patching": {
+    "padding_pixels": 16,
+    "size_divisor": 16,
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "attention_distance_sigma": 4.0,
+    "attention_base_weight": 0.25,
+    "attention_ph_weight": 0.75,
+    "input_channels": [
+      "brightness",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention"
+    ],
+    "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 96,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 16,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only."
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.5,
+    "radius_pixels": 5,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
+    "per_ship_mass": 1.0
+  },
+  "model": {
+    "name": "MaskedDensityUNet",
+    "in_channels": 6,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "activation": "softplus",
+    "dropout": 0.0
+  },
+  "training": {
+    "loss": {
+      "name": "structured_density_loss",
+      "rationale": "This count-fix pilot replaces saturating relative Huber count losses with log-count MSE, adds a foreground density term, applies local count conservation only to positive-target windows, and keeps empty-window/background suppression weak so the model cannot minimize loss by predicting near-zero density everywhere. Stabilized v2 uses lower learning rate and gradient clipping after the first pilot produced non-finite values.",
+      "pixel_weight": 0.1,
+      "foreground_weight": 0.2,
+      "count_weight": 0.3,
+      "batch_count_weight": 0.12,
+      "local_count_weight": 0.15,
+      "empty_count_weight": 0.02,
+      "background_weight": 0.01,
+      "pixel_loss": "huber",
+      "foreground_loss": "huber",
+      "huber_delta": 0.05,
+      "count_loss": "log_mse",
+      "count_huber_delta": 1.0,
+      "count_normalizer": 1.0,
+      "local_count_windows": [
+        32,
+        64,
+        128
+      ],
+      "local_count_stride_factor": 2,
+      "positive_local_count_only": true,
+      "local_count_target_threshold": 0.25,
+      "foreground_target_threshold": 1e-06,
+      "foreground_weight_power": 0.5,
+      "empty_count_target_threshold": 1e-06,
+      "background_target_threshold": 1e-06
+    },
+    "batch_size": 8,
+    "epochs": 20,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip_norm": 1.0
+  }
+}

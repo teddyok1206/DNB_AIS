@@ -333,6 +333,7 @@ def run_batches(
     train: bool,
     optimizer: torch.optim.Optimizer | None = None,
     num_workers: int = 0,
+    grad_clip_norm: float = 0.0,
 ) -> dict[str, Any]:
     loader = make_loader(patches, batch_size, size_divisor, shuffle=train, num_workers=num_workers)
     losses: list[float] = []
@@ -354,8 +355,12 @@ def run_batches(
                 optimizer.zero_grad(set_to_none=True)
             pred = model(batch["x"])
             loss = loss_fn(pred, batch)
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite loss encountered in {'train' if train else 'eval'} mode")
             if train:
                 loss.backward()
+                if float(grad_clip_norm) > 0.0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip_norm))
                 optimizer.step()
             losses.append(float(loss.detach().cpu()))
             if getattr(loss_fn, "last_components", None):
@@ -514,6 +519,7 @@ def main(argv: list[str] | None = None) -> int:
         weight_decay=float(args.weight_decay if args.weight_decay is not None else training.get("weight_decay", 1.0e-4)),
     )
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
+    grad_clip_norm = float(training.get("grad_clip_norm", 0.0) or 0.0)
 
     all_scene_results: list[SceneBuildResult] = []
     selected_by_split: dict[str, list[DensityPatch]] = {"train": [], "val": [], "test": []}
@@ -547,6 +553,7 @@ def main(argv: list[str] | None = None) -> int:
             train=True,
             optimizer=optimizer,
             num_workers=int(args.num_workers),
+            grad_clip_norm=grad_clip_norm,
         )
         val_metrics = run_batches(
             model=model,
@@ -592,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
         "seed": int(args.seed),
         "epochs": int(args.epochs),
         "batch_size": int(args.batch_size),
+        "grad_clip_norm": float(grad_clip_norm),
         "smoke_filters": {
             "skip_ph_anchor_zero": bool(args.skip_ph_anchor_zero),
             "max_patches_per_scene": int(args.max_patches_per_scene),
