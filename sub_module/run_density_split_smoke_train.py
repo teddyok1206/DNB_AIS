@@ -31,6 +31,7 @@ from .dnb_density_common import (
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_project_paths import DENSITY_OUTPUT_ROOT
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask
@@ -56,9 +57,9 @@ class SceneBuildResult:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a short split-level U-Net train/inference smoke test.")
-    parser.add_argument("--scene-split-csv", type=Path, default=STEP3 / "outputs" / "density_smoke_split_10_3_2" / "scene_split.csv")
+    parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2" / "scene_split.csv")
     parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_main.json")
-    parser.add_argument("--output-dir", type=Path, default=STEP3 / "outputs" / "density_split_smoke_train")
+    parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "runs" / "density_split_smoke_train")
     parser.add_argument("--metadata-csv", type=Path, default=STEP3 / "metadata_JPSS-2.csv")
     parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--device", default="mps")
@@ -69,11 +70,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--max-scenes-per-split", type=int, default=0)
     parser.add_argument("--max-patches-per-scene", type=int, default=16)
+    parser.add_argument("--max-ph-patches-per-scene", type=int, default=0)
+    parser.add_argument("--max-fallback-patches-per-scene", type=int, default=0)
     parser.add_argument("--max-patch-height", type=int, default=512)
     parser.add_argument("--max-patch-width", type=int, default=512)
     parser.add_argument("--skip-ph-anchor-zero", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--preview-patches", type=int, default=12)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--save-checkpoint", action=argparse.BooleanOptionalAction, default=False)
     return parser
 
 
@@ -211,13 +215,13 @@ def select_smoke_patches(
     patches: list[DensityPatch],
     *,
     max_patches: int,
+    max_ph_patches: int = 0,
+    max_fallback_patches: int = 0,
     max_height: int,
     max_width: int,
 ) -> tuple[list[DensityPatch], dict[str, Any]]:
     kept_size = [patch for patch in patches if patch.shape[0] <= int(max_height) and patch.shape[1] <= int(max_width)]
     dropped_too_large = len(patches) - len(kept_size)
-    if int(max_patches) <= 0 or len(kept_size) <= int(max_patches):
-        return kept_size, {"dropped_too_large": int(dropped_too_large), "dropped_by_cap": 0}
 
     def priority(patch: DensityPatch) -> tuple[int, float, int]:
         return (
@@ -226,10 +230,47 @@ def select_smoke_patches(
             int(patch.valid_pixels),
         )
 
-    selected = sorted(kept_size, key=priority, reverse=True)[: int(max_patches)]
+    def within_total_limit(selected: list[DensityPatch]) -> list[DensityPatch]:
+        if int(max_patches) <= 0 or len(selected) <= int(max_patches):
+            return selected
+        return sorted(selected, key=priority, reverse=True)[: int(max_patches)]
+
+    by_kind = {
+        "ph_anchor": [patch for patch in kept_size if patch.partition_kind == "ph_anchor"],
+        "fallback_grid": [patch for patch in kept_size if patch.partition_kind == "fallback_grid"],
+    }
+    for kind in by_kind:
+        by_kind[kind] = sorted(by_kind[kind], key=lambda patch: (float(patch.raw_count_sum), int(patch.valid_pixels)), reverse=True)
+
+    use_kind_quotas = int(max_ph_patches) > 0 or int(max_fallback_patches) > 0
+    if use_kind_quotas:
+        selected: list[DensityPatch] = []
+        selected.extend(by_kind["ph_anchor"][: max(int(max_ph_patches), 0)])
+        selected.extend(by_kind["fallback_grid"][: max(int(max_fallback_patches), 0)])
+
+        if int(max_patches) > 0 and len(selected) < int(max_patches):
+            selected_ids = {id(patch) for patch in selected}
+            remaining = [patch for patch in kept_size if id(patch) not in selected_ids]
+            fill_count = int(max_patches) - len(selected)
+            selected.extend(sorted(remaining, key=priority, reverse=True)[:fill_count])
+        selected = within_total_limit(selected)
+    elif int(max_patches) <= 0 or len(kept_size) <= int(max_patches):
+        selected = kept_size
+    else:
+        selected = sorted(kept_size, key=priority, reverse=True)[: int(max_patches)]
+
+    selected_ph = sum(1 for patch in selected if patch.partition_kind == "ph_anchor")
+    selected_fallback = sum(1 for patch in selected if patch.partition_kind == "fallback_grid")
     return selected, {
         "dropped_too_large": int(dropped_too_large),
         "dropped_by_cap": int(len(kept_size) - len(selected)),
+        "kept_size_count": int(len(kept_size)),
+        "candidate_ph_anchor_count": int(len(by_kind["ph_anchor"])),
+        "candidate_fallback_grid_count": int(len(by_kind["fallback_grid"])),
+        "selected_ph_anchor_count": int(selected_ph),
+        "selected_fallback_grid_count": int(selected_fallback),
+        "max_ph_patches_per_scene": int(max_ph_patches),
+        "max_fallback_patches_per_scene": int(max_fallback_patches),
     }
 
 
@@ -279,6 +320,8 @@ def build_scene(
     selected, selection_metrics = select_smoke_patches(
         patches,
         max_patches=int(args.max_patches_per_scene),
+        max_ph_patches=int(args.max_ph_patches_per_scene),
+        max_fallback_patches=int(args.max_fallback_patches_per_scene),
         max_height=int(args.max_patch_height),
         max_width=int(args.max_patch_width),
     )
@@ -412,6 +455,13 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
         "selected_raw_sum",
         "dropped_too_large",
         "dropped_by_cap",
+        "kept_size_count",
+        "candidate_ph_anchor_count",
+        "candidate_fallback_grid_count",
+        "selected_ph_anchor_count",
+        "selected_fallback_grid_count",
+        "max_ph_patches_per_scene",
+        "max_fallback_patches_per_scene",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -433,8 +483,57 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
                     "selected_raw_sum": float(result.metrics.get("selected_raw_sum", 0.0)),
                     "dropped_too_large": int(selection.get("dropped_too_large", 0)),
                     "dropped_by_cap": int(selection.get("dropped_by_cap", 0)),
+                    "kept_size_count": int(selection.get("kept_size_count", 0)),
+                    "candidate_ph_anchor_count": int(selection.get("candidate_ph_anchor_count", 0)),
+                    "candidate_fallback_grid_count": int(selection.get("candidate_fallback_grid_count", 0)),
+                    "selected_ph_anchor_count": int(selection.get("selected_ph_anchor_count", 0)),
+                    "selected_fallback_grid_count": int(selection.get("selected_fallback_grid_count", 0)),
+                    "max_ph_patches_per_scene": int(selection.get("max_ph_patches_per_scene", 0)),
+                    "max_fallback_patches_per_scene": int(selection.get("max_fallback_patches_per_scene", 0)),
                 }
             )
+
+
+def write_dirty_patch(output_dir: Path, git_info: dict[str, Any]) -> str | None:
+    if not bool(git_info.get("git_dirty")):
+        return None
+    try:
+        diff = subprocess.check_output(["git", "diff", "HEAD", "--"], cwd=ROOT, text=True)
+    except Exception as exc:
+        path = output_dir / "run_git_dirty.patch.error.txt"
+        path.write_text(str(exc), encoding="utf-8")
+        return str(path)
+    if not diff.strip():
+        return None
+    path = output_dir / "run_git_dirty.patch"
+    path.write_text(diff, encoding="utf-8")
+    return str(path)
+
+
+def save_checkpoint(
+    path: Path,
+    *,
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    config: dict[str, Any],
+    args: argparse.Namespace,
+    train_history: list[dict[str, Any]],
+    test_metrics: dict[str, Any],
+) -> str:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = {
+        "schema_version": 1,
+        "kind": "density_count_spatial_checkpoint",
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": config,
+        "args": vars(args),
+        "train_history": train_history,
+        "test": test_metrics,
+    }
+    torch.save(checkpoint, path)
+    return str(path)
 
 
 def save_filtered_scene_split(path: Path, results: list[SceneBuildResult]) -> None:
@@ -623,6 +722,8 @@ def main(argv: list[str] | None = None) -> int:
         "smoke_filters": {
             "skip_ph_anchor_zero": bool(args.skip_ph_anchor_zero),
             "max_patches_per_scene": int(args.max_patches_per_scene),
+            "max_ph_patches_per_scene": int(args.max_ph_patches_per_scene),
+            "max_fallback_patches_per_scene": int(args.max_fallback_patches_per_scene),
             "max_patch_height": int(args.max_patch_height),
             "max_patch_width": int(args.max_patch_width),
         },
@@ -646,6 +747,21 @@ def main(argv: list[str] | None = None) -> int:
         },
         "checkpoint_saved": False,
     }
+    dirty_patch_path = write_dirty_patch(output_dir, summary["git"])
+    if dirty_patch_path is not None:
+        summary["outputs"]["run_git_dirty_patch"] = dirty_patch_path
+    if bool(args.save_checkpoint):
+        checkpoint_path = save_checkpoint(
+            output_dir / "checkpoints" / "checkpoint_last.pt",
+            model=model,
+            optimizer=optimizer,
+            config=config,
+            args=args,
+            train_history=train_history,
+            test_metrics=test_metrics,
+        )
+        summary["checkpoint_saved"] = True
+        summary["outputs"]["checkpoint_last"] = checkpoint_path
     summary_path = output_dir / "run_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"summary_path": str(summary_path), "scene_counts": summary["scene_counts"], "test": test_metrics, "preview_count": len(preview_paths)}, ensure_ascii=False, indent=2))

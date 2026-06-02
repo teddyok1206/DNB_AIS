@@ -11,9 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-ROOT = Path(__file__).resolve().parents[1]
-STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
+from .dnb_project_paths import DENSITY_OUTPUT_ROOT, ROOT, STEP3
 
 
 @dataclass(frozen=True)
@@ -30,7 +28,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--completed-txt", type=Path, default=STEP3 / "bboxes_JPSS-2" / "Bboxes_completed.txt")
     parser.add_argument("--geojson-dir", type=Path, default=STEP3 / "bboxes_JPSS-2")
     parser.add_argument("--tif-root", type=Path, default=Path("/Volumes/SAMSUNG/JPSS-2_VIIRS"))
-    parser.add_argument("--output-dir", type=Path, default=STEP3 / "outputs" / "density_smoke_split_10_3_2")
+    parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2")
     parser.add_argument("--train-days", type=int, default=10)
     parser.add_argument("--val-days", type=int, default=3)
     parser.add_argument("--test-days", type=int, default=2)

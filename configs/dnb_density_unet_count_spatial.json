@@ -13,7 +13,7 @@
     "crop_to_bounds": true,
     "segment_policy": "single_scene",
     "write_masked_tif": true,
-    "output_dir": "outputs/preprocessed_scene_masks/density",
+    "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
     "all_touched": true
   },
   "detector": {

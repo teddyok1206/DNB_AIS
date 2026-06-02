@@ -17,15 +17,13 @@ from rasterio.transform import rowcol
 from rasterio.warp import transform as warp_transform
 from shapely.geometry import shape
 
-
-ROOT = Path(__file__).resolve().parents[1]
-STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
+from .dnb_project_paths import DENSITY_OUTPUT_ROOT
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create quick visual checks for a density scene split.")
-    parser.add_argument("--scene-split-csv", type=Path, default=STEP3 / "outputs" / "density_smoke_split_10_3_2" / "scene_split.csv")
-    parser.add_argument("--output-dir", type=Path, default=STEP3 / "outputs" / "density_smoke_split_10_3_2" / "visuals")
+    parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2" / "scene_split.csv")
+    parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2" / "visuals")
     parser.add_argument("--max-thumb-size", type=int, default=900)
     parser.add_argument("--point-size", type=float, default=1.5)
     parser.add_argument("--point-alpha", type=float, default=0.55)

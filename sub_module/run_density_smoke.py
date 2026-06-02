@@ -26,6 +26,7 @@ from .dnb_density_common import (
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_gat_pipeline import GroundTruthResolver, SceneRaster
+from .dnb_project_paths import DENSITY_OUTPUT_ROOT, project_path
 from .kr_sea_mask import apply_kr_sea_mask
 from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
@@ -309,7 +310,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kr-eez-crop-to-bounds", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--kr-eez-segment-policy", choices=["single_scene", "largest_segment"], default="single_scene")
     parser.add_argument("--kr-eez-write-masked-tif", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=ROOT / "outputs" / "preprocessed_scene_masks" / "density")
+    parser.add_argument("--kr-eez-mask-output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "preprocessed_scene_masks" / "density")
     parser.add_argument("--kr-eez-all-touched", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=1)
@@ -494,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         mask_result = apply_kr_sea_mask(
             args.scene_tif,
             step3_dir=args.kr_eez_step3_dir,
-            output_dir=args.kr_eez_mask_output_dir,
+            output_dir=project_path(args.kr_eez_mask_output_dir),
             crop_to_bounds=bool(args.kr_eez_crop_to_bounds),
             segment_policy=str(args.kr_eez_segment_policy),
             write_masked_tif=bool(args.kr_eez_write_masked_tif),
