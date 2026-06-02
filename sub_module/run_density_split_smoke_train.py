@@ -189,6 +189,7 @@ def target_config_from_config(config: dict[str, Any]) -> DensityTargetConfig:
 
 def partition_config_from_config(config: dict[str, Any]) -> ScenePartitionConfig:
     partition = config.get("partitioning", {})
+    hierarchical = partition.get("hierarchical_ph", {})
     return ScenePartitionConfig(
         enabled=True,
         fallback_tile_pixels=int(partition.get("fallback_tile_pixels", 96)),
@@ -196,6 +197,22 @@ def partition_config_from_config(config: dict[str, Any]) -> ScenePartitionConfig
         anchor_padding_pixels=int(partition.get("anchor_padding_pixels", 16)),
         min_owner_pixels=int(partition.get("min_owner_pixels", 1)),
         min_fallback_owner_pixels=int(partition.get("min_fallback_owner_pixels", 1)),
+        hierarchical_ph_enabled=bool(hierarchical.get("enabled", False)),
+        hierarchical_large_min_pixels=int(hierarchical.get("large_min_pixels", 65536)),
+        hierarchical_large_min_height=int(hierarchical.get("large_min_height", 384)),
+        hierarchical_large_min_width=int(hierarchical.get("large_min_width", 384)),
+        hierarchical_child_anchor_padding_pixels=int(hierarchical.get("child_anchor_padding_pixels", 8)),
+        hierarchical_child_detection_threshold=float(hierarchical.get("child_detection_threshold", 0.5)),
+        hierarchical_child_analysis_threshold=float(hierarchical.get("child_analysis_threshold", 0.25)),
+        hierarchical_child_threshold_reference=str(hierarchical.get("child_threshold_reference", "median")),
+        hierarchical_child_smooth_sigma=float(hierarchical.get("child_smooth_sigma", 0.0)),
+        hierarchical_child_lifetime_limit=float(hierarchical.get("child_lifetime_limit", 0.0)),
+        hierarchical_child_lifetime_limit_fraction=float(hierarchical.get("child_lifetime_limit_fraction", 1.0005)),
+        hierarchical_child_area_limit=int(hierarchical.get("child_area_limit", 0)),
+        hierarchical_child_min_nodes=int(hierarchical.get("child_min_nodes", 3)),
+        hierarchical_child_max_nodes=int(hierarchical.get("child_max_nodes", 2048)),
+        hierarchical_child_max_candidates_per_parent=int(hierarchical.get("child_max_candidates_per_parent", 64)),
+        hierarchical_keep_large_parent=bool(hierarchical.get("keep_large_parent", False)),
     )
 
 
@@ -223,9 +240,11 @@ def select_smoke_patches(
     kept_size = [patch for patch in patches if patch.shape[0] <= int(max_height) and patch.shape[1] <= int(max_width)]
     dropped_too_large = len(patches) - len(kept_size)
 
+    ph_kinds = {"ph_anchor", "ph_child"}
+
     def priority(patch: DensityPatch) -> tuple[int, float, int]:
         return (
-            1 if patch.partition_kind == "ph_anchor" else 0,
+            1 if patch.partition_kind in ph_kinds else 0,
             float(patch.raw_count_sum),
             int(patch.valid_pixels),
         )
@@ -236,9 +255,11 @@ def select_smoke_patches(
         return sorted(selected, key=priority, reverse=True)[: int(max_patches)]
 
     by_kind = {
-        "ph_anchor": [patch for patch in kept_size if patch.partition_kind == "ph_anchor"],
+        "ph_anchor": [patch for patch in kept_size if patch.partition_kind in ph_kinds],
         "fallback_grid": [patch for patch in kept_size if patch.partition_kind == "fallback_grid"],
     }
+    candidate_ph_anchor = sum(1 for patch in kept_size if patch.partition_kind == "ph_anchor")
+    candidate_ph_child = sum(1 for patch in kept_size if patch.partition_kind == "ph_child")
     for kind in by_kind:
         by_kind[kind] = sorted(by_kind[kind], key=lambda patch: (float(patch.raw_count_sum), int(patch.valid_pixels)), reverse=True)
 
@@ -259,15 +280,21 @@ def select_smoke_patches(
     else:
         selected = sorted(kept_size, key=priority, reverse=True)[: int(max_patches)]
 
-    selected_ph = sum(1 for patch in selected if patch.partition_kind == "ph_anchor")
+    selected_ph = sum(1 for patch in selected if patch.partition_kind in ph_kinds)
+    selected_ph_anchor = sum(1 for patch in selected if patch.partition_kind == "ph_anchor")
+    selected_ph_child = sum(1 for patch in selected if patch.partition_kind == "ph_child")
     selected_fallback = sum(1 for patch in selected if patch.partition_kind == "fallback_grid")
     return selected, {
         "dropped_too_large": int(dropped_too_large),
         "dropped_by_cap": int(len(kept_size) - len(selected)),
         "kept_size_count": int(len(kept_size)),
-        "candidate_ph_anchor_count": int(len(by_kind["ph_anchor"])),
+        "candidate_ph_patch_count": int(len(by_kind["ph_anchor"])),
+        "candidate_ph_anchor_count": int(candidate_ph_anchor),
+        "candidate_ph_child_count": int(candidate_ph_child),
         "candidate_fallback_grid_count": int(len(by_kind["fallback_grid"])),
-        "selected_ph_anchor_count": int(selected_ph),
+        "selected_ph_patch_count": int(selected_ph),
+        "selected_ph_anchor_count": int(selected_ph_anchor),
+        "selected_ph_child_count": int(selected_ph_child),
         "selected_fallback_grid_count": int(selected_fallback),
         "max_ph_patches_per_scene": int(max_ph_patches),
         "max_fallback_patches_per_scene": int(max_fallback_patches),

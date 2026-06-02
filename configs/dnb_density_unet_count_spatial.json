@@ -65,7 +65,26 @@
     "anchor_padding_pixels": 16,
     "min_owner_pixels": 1,
     "min_fallback_owner_pixels": 1,
-    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only."
+    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only.",
+    "hierarchical_ph": {
+      "enabled": true,
+      "large_min_pixels": 65536,
+      "large_min_height": 384,
+      "large_min_width": 384,
+      "child_anchor_padding_pixels": 8,
+      "child_detection_threshold": 0.5,
+      "child_analysis_threshold": 0.25,
+      "child_threshold_reference": "median",
+      "child_smooth_sigma": 0.0,
+      "child_lifetime_limit": 0.0,
+      "child_lifetime_limit_fraction": 1.0005,
+      "child_area_limit": 0,
+      "child_min_nodes": 3,
+      "child_max_nodes": 2048,
+      "child_max_candidates_per_parent": 64,
+      "keep_large_parent": false,
+      "policy": "Large H0 parent anchors are not kept as oversized training patches. Local H0 PH is rerun inside each large parent with relaxed child detection; child anchors claim local peaks first and the existing fallback grid covers any remainder."
+    }
   },
   "target": {
     "kernel": "gaussian",

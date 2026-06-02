@@ -140,6 +140,28 @@ def _config_defaults(config_path: Path | None) -> dict[str, Any]:
     for source_key, target_key in partitioning_map.items():
         if source_key in partitioning and partitioning[source_key] is not None:
             defaults[target_key] = partitioning[source_key]
+    hierarchical = partitioning.get("hierarchical_ph", {})
+    hierarchical_map = {
+        "enabled": "partition_hierarchical_ph",
+        "large_min_pixels": "partition_hierarchical_large_min_pixels",
+        "large_min_height": "partition_hierarchical_large_min_height",
+        "large_min_width": "partition_hierarchical_large_min_width",
+        "child_anchor_padding_pixels": "partition_hierarchical_child_anchor_padding_pixels",
+        "child_detection_threshold": "partition_hierarchical_child_detection_threshold",
+        "child_analysis_threshold": "partition_hierarchical_child_analysis_threshold",
+        "child_threshold_reference": "partition_hierarchical_child_threshold_reference",
+        "child_smooth_sigma": "partition_hierarchical_child_smooth_sigma",
+        "child_lifetime_limit": "partition_hierarchical_child_lifetime_limit",
+        "child_lifetime_limit_fraction": "partition_hierarchical_child_lifetime_limit_fraction",
+        "child_area_limit": "partition_hierarchical_child_area_limit",
+        "child_min_nodes": "partition_hierarchical_child_min_nodes",
+        "child_max_nodes": "partition_hierarchical_child_max_nodes",
+        "child_max_candidates_per_parent": "partition_hierarchical_child_max_candidates_per_parent",
+        "keep_large_parent": "partition_hierarchical_keep_large_parent",
+    }
+    for source_key, target_key in hierarchical_map.items():
+        if source_key in hierarchical and hierarchical[source_key] is not None:
+            defaults[target_key] = hierarchical[source_key]
 
     target = config.get("target", {})
     target_map = {
@@ -325,6 +347,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--partition-anchor-padding-pixels", type=int, default=16)
     parser.add_argument("--partition-min-owner-pixels", type=int, default=1)
     parser.add_argument("--partition-min-fallback-owner-pixels", type=int, default=1)
+    parser.add_argument("--partition-hierarchical-ph", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--partition-hierarchical-large-min-pixels", type=int, default=65536)
+    parser.add_argument("--partition-hierarchical-large-min-height", type=int, default=384)
+    parser.add_argument("--partition-hierarchical-large-min-width", type=int, default=384)
+    parser.add_argument("--partition-hierarchical-child-anchor-padding-pixels", type=int, default=8)
+    parser.add_argument("--partition-hierarchical-child-detection-threshold", type=float, default=0.5)
+    parser.add_argument("--partition-hierarchical-child-analysis-threshold", type=float, default=0.25)
+    parser.add_argument("--partition-hierarchical-child-threshold-reference", choices=["zero", "median"], default="median")
+    parser.add_argument("--partition-hierarchical-child-smooth-sigma", type=float, default=0.0)
+    parser.add_argument("--partition-hierarchical-child-lifetime-limit", type=float, default=0.0)
+    parser.add_argument("--partition-hierarchical-child-lifetime-limit-fraction", type=float, default=1.0005)
+    parser.add_argument("--partition-hierarchical-child-area-limit", type=int, default=0)
+    parser.add_argument("--partition-hierarchical-child-min-nodes", type=int, default=3)
+    parser.add_argument("--partition-hierarchical-child-max-nodes", type=int, default=2048)
+    parser.add_argument("--partition-hierarchical-child-max-candidates-per-parent", type=int, default=64)
+    parser.add_argument("--partition-hierarchical-keep-large-parent", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--sort-by", choices=["lifetime", "cluster_id", "node_count"], default="node_count")
     parser.add_argument("--parent-min-nodes", type=int, default=32)
     parser.add_argument("--parent-max-nodes", type=int, default=0)
@@ -569,6 +607,22 @@ def main(argv: list[str] | None = None) -> int:
             anchor_padding_pixels=int(args.partition_anchor_padding_pixels),
             min_owner_pixels=int(args.partition_min_owner_pixels),
             min_fallback_owner_pixels=int(args.partition_min_fallback_owner_pixels),
+            hierarchical_ph_enabled=bool(args.partition_hierarchical_ph),
+            hierarchical_large_min_pixels=int(args.partition_hierarchical_large_min_pixels),
+            hierarchical_large_min_height=int(args.partition_hierarchical_large_min_height),
+            hierarchical_large_min_width=int(args.partition_hierarchical_large_min_width),
+            hierarchical_child_anchor_padding_pixels=int(args.partition_hierarchical_child_anchor_padding_pixels),
+            hierarchical_child_detection_threshold=float(args.partition_hierarchical_child_detection_threshold),
+            hierarchical_child_analysis_threshold=float(args.partition_hierarchical_child_analysis_threshold),
+            hierarchical_child_threshold_reference=str(args.partition_hierarchical_child_threshold_reference),
+            hierarchical_child_smooth_sigma=float(args.partition_hierarchical_child_smooth_sigma),
+            hierarchical_child_lifetime_limit=float(args.partition_hierarchical_child_lifetime_limit),
+            hierarchical_child_lifetime_limit_fraction=float(args.partition_hierarchical_child_lifetime_limit_fraction),
+            hierarchical_child_area_limit=int(args.partition_hierarchical_child_area_limit),
+            hierarchical_child_min_nodes=int(args.partition_hierarchical_child_min_nodes),
+            hierarchical_child_max_nodes=int(args.partition_hierarchical_child_max_nodes),
+            hierarchical_child_max_candidates_per_parent=int(args.partition_hierarchical_child_max_candidates_per_parent),
+            hierarchical_keep_large_parent=bool(args.partition_hierarchical_keep_large_parent),
         )
         patches, _, partition_summary = build_partitioned_density_patches(
             scene,
