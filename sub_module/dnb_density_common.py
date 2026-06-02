@@ -34,10 +34,31 @@ def inverse_radiance_from_arctan_encoded(
     return inverse.astype(np.float32, copy=False)
 
 
+def brightness_power_from_encoded(encoded: np.ndarray, exponent: float) -> np.ndarray:
+    arr = np.asarray(encoded, dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        powered = np.power(arr, float(exponent))
+    return powered.astype(np.float32, copy=False)
+
+
+def _brightness_power_exponent(channel_name: str) -> float | None:
+    normalized = str(channel_name).strip().lower().replace("-", "_")
+    for prefix in ("brightness_gamma_", "brightness_power_", "encoded_gamma_", "encoded_power_"):
+        if normalized.startswith(prefix):
+            value = normalized[len(prefix) :].replace("p", ".")
+            return float(value)
+    if normalized in {"brightness_gamma2", "brightness_power2", "encoded_gamma2", "encoded_power2"}:
+        return 2.0
+    return None
+
+
 def _channel_array_for_patch(patch: "DensityPatch", channel_name: str) -> np.ndarray:
     normalized = str(channel_name).strip().lower()
     if normalized in {"brightness", "encoded_brightness", "arctan_brightness"}:
         return patch.image
+    exponent = _brightness_power_exponent(normalized)
+    if exponent is not None:
+        return brightness_power_from_encoded(patch.image, exponent)
     if normalized in {"inverse_radiance", "raw_inverse_radiance", "radiance"}:
         return inverse_radiance_from_arctan_encoded(patch.image)
     if normalized in {"parent_ph_mask", "parent_mask", "roi_mask", "ph_roi_mask"}:
