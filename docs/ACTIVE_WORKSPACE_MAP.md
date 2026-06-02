@@ -9,6 +9,7 @@ Keep this map updated when the canonical path layout changes.
 - `sub_module/`: reusable Python modules and runnable pipeline entrypoints.
 - `scripts/`: repo maintenance and long-running operational helpers.
 - `docs/`: design decisions, methodology notes, workflow records, and curated experiment interpretation.
+- `docs/experiments/`: curated lightweight experiment reports promoted out of the active STEP3 runtime folder.
 - `outputs/`: runtime outputs and smoke-test diagnostics; ignored by git except `outputs/README.md`.
 - `artifacts/`: long-lived model/checkpoint metadata; heavy files are not tracked.
 - `[3]_DNB_AIS - (STEP 3)/`: active DNB/AIS operational workspace for current data preparation and bbox generation.
@@ -25,6 +26,10 @@ Important active items:
 - `metadata_JPSS-2.csv`: current JPSS-2 metadata table used by split and bbox tooling.
 - `bboxes_JPSS-2/`: current bbox/GeoJSON outputs used for density targets.
 - `outputs/`: local runtime output for split, PH, partition, and smoke-train diagnostics.
+
+Lightweight operational source files in this folder are tracked because current
+jobs still run them by exact path. Heavy runtime products, raw AIS, GeoTIFFs,
+bbox bulk outputs, DB files, and generated analysis tables stay untracked.
 
 Do not rename this folder until path aliases or config-driven paths have replaced direct `STEP3` constants in the active code.
 

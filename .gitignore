@@ -28,6 +28,7 @@ conda-meta/
 
 # Project artifacts: keep code/config/docs in git, not generated runs
 outputs/**
+**/outputs/**
 !outputs/
 !outputs/README.md
 artifacts/**
@@ -73,9 +74,11 @@ lightning_logs/
 *.shx
 *.dbf
 *.prj
+*.cst
 *.cpg
 *.qgz
 *.qgs
+*.mat
 
 # Generated figures / archives / papers
 *.png
@@ -107,6 +110,11 @@ lightning_logs/
 **/ships_radiance/
 **/cross-check/
 **/QGIS_prj_files/
+**/eez/
+**/eez_12nm/
+
+# Generated STEP3 analysis tables
+**/pixel_overlap*.csv
 
 # Vendored/external repos should be handled deliberately, not accidentally imported
 \[3\]_DNB_AIS - (STEP 3)/DRUID/

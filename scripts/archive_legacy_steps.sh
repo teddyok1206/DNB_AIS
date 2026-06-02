@@ -8,6 +8,10 @@ Usage: scripts/archive_legacy_steps.sh [--force] [--target-dir PATH]
 Creates compressed archives for legacy [1] and [2] step folders without deleting
 sources. By default the script refuses to run while active [A]/[D]/[E] jobs are
 running, because archiving ~100GB can contend for disk IO.
+
+Zero-allocated files with nonzero logical size are excluded from the compressed
+archive and recorded in the manifest. This avoids triggering downloads for dataless
+cloud-placeholder files or spending hours streaming holes.
 USAGE
 }
 
@@ -65,6 +69,20 @@ size_bytes() {
   stat -f %z "$1" 2>/dev/null || stat -c %s "$1"
 }
 
+disk_kib() {
+  du -sk "$1" | awk '{print $1}'
+}
+
+tar_exclude_pattern() {
+  python - "$1" <<'PY'
+import sys
+
+value = sys.argv[1]
+replacements = {"[": "\\[", "]": "\\]", "*": "\\*", "?": "\\?"}
+print("".join(replacements.get(char, char) for char in value))
+PY
+}
+
 write_header() {
   {
     echo "# Legacy Archive Manifest - ${archive_date}"
@@ -72,6 +90,7 @@ write_header() {
     echo "- repo_root: \`$root\`"
     echo "- target_dir: \`$target_dir\`"
     echo "- compression: \`zstd -T1 -1\`"
+    echo "- zero_allocated_payload_policy: files with nonzero logical size and zero allocated KiB are excluded and recorded"
     echo "- source_delete_policy: sources are not deleted by this script"
     echo "- active_job_check: $([[ "$force" -eq 1 ]] && echo forced || echo passed)"
     echo
@@ -86,8 +105,11 @@ archive_one() {
   local source_path="$root/$folder"
   local output="$target_dir/${label}_legacy_${archive_date}.tar.zst"
   local list_head="$output.list_head.txt"
+  local zero_payloads="$target_dir/${label}_excluded_zero_allocated_payloads_${archive_date}.tsv"
+  local -a exclude_args=()
   local checksum
   local bytes
+  local zero_count=0
 
   if [[ ! -d "$source_path" ]]; then
     echo "Skipping missing source: $source_path" >&2
@@ -99,8 +121,27 @@ archive_one() {
     return 1
   fi
 
+  printf 'relative_path\tlogical_size_bytes\tallocated_kib\trestore_hint\n' > "$zero_payloads"
+  while IFS= read -r -d '' relative_path; do
+    local candidate="$root/$relative_path"
+    local logical_size
+    local allocated_kib
+    logical_size="$(size_bytes "$candidate")"
+    allocated_kib="$(disk_kib "$candidate")"
+    if [[ "$logical_size" -gt 0 && "$allocated_kib" -eq 0 ]]; then
+      exclude_args+=(--exclude "$(tar_exclude_pattern "$relative_path")")
+      printf '%s\t%s\t%s\tcloud/dataless or sparse placeholder; source content was not local during archive\n' "$relative_path" "$logical_size" "$allocated_kib" >> "$zero_payloads"
+      zero_count=$((zero_count + 1))
+    fi
+  done < <(cd "$root" && find "$folder" -type f -print0)
+
   echo "[archive] $folder -> $output"
-  tar -C "$root" -cf - "$folder" | "$zstd_bin" -T1 -1 -o "$output"
+  if [[ "$zero_count" -gt 0 ]]; then
+    echo "[archive] excluding $zero_count zero-allocated payload(s); see $zero_payloads"
+  else
+    rm -f "$zero_payloads"
+  fi
+  tar -C "$root" "${exclude_args[@]}" -cf - "$folder" | "$zstd_bin" -T1 -1 -o "$output"
   checksum="$(sha256_file "$output")"
   bytes="$(size_bytes "$output")"
   echo "$checksum  $output" > "$output.sha256"
@@ -117,6 +158,10 @@ archive_one() {
     echo "- size_bytes: $bytes"
     echo "- sha256: \`$checksum\`"
     echo "- listing_head: \`$list_head\`"
+    echo "- excluded_zero_allocated_payload_count: $zero_count"
+    if [[ "$zero_count" -gt 0 ]]; then
+      echo "- excluded_zero_allocated_payloads: \`$zero_payloads\`"
+    fi
     echo
   } >> "$manifest"
 }
