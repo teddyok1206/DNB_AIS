@@ -432,7 +432,180 @@ class StructuredDensityLoss(nn.Module):
         return total
 
 
-def build_density_loss(config: dict[str, Any] | DensityLossConfig | None = None) -> StructuredDensityLoss:
+@dataclass(frozen=True)
+class CountSpatialLossConfig:
+    name: str = "count_spatial_density_loss"
+    count_weight: float = 0.50
+    spatial_weight: float = 0.40
+    density_weight: float = 0.10
+    background_weight: float = 0.0
+    count_loss: str = "log_mse"
+    count_huber_delta: float = 1.0
+    spatial_loss: str = "kl"
+    spatial_temperature: float = 1.0
+    density_loss: str = "huber"
+    huber_delta: float = 0.05
+    background_target_threshold: float = 1.0e-6
+    min_target_count_for_spatial: float = 1.0e-6
+    eps: float = 1.0e-8
+    report_components: bool = True
+
+
+def count_spatial_loss_config_from_dict(config: dict[str, Any] | None) -> CountSpatialLossConfig:
+    if not config:
+        return CountSpatialLossConfig()
+    allowed = {item.name for item in fields(CountSpatialLossConfig)}
+    values = {key: value for key, value in dict(config).items() if key in allowed}
+    return CountSpatialLossConfig(**values)
+
+
+def _spatial_prob_from_logits(
+    spatial_logits: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    temperature: float,
+    eps: float,
+) -> torch.Tensor:
+    temperature = max(float(temperature), float(eps))
+    valid = valid_mask > 0
+    logits = spatial_logits / temperature
+    logits = torch.where(valid, logits, torch.full_like(logits, -1.0e9))
+    flat_logits = logits.flatten(1)
+    flat_valid = valid.flatten(1).to(dtype=spatial_logits.dtype)
+    max_logits = flat_logits.max(dim=1, keepdim=True).values
+    exp_logits = torch.exp(flat_logits - max_logits) * flat_valid
+    denom = torch.clamp(exp_logits.sum(dim=1, keepdim=True), min=float(eps))
+    return (exp_logits / denom).reshape_as(spatial_logits)
+
+
+def density_from_model_output(
+    output: torch.Tensor | dict[str, torch.Tensor],
+    batch: dict[str, Any],
+    *,
+    spatial_temperature: float = 1.0,
+    eps: float = 1.0e-8,
+) -> torch.Tensor:
+    if torch.is_tensor(output):
+        return output
+    if "density" in output:
+        return output["density"]
+    if "spatial_logits" not in output or "count" not in output:
+        raise ValueError("Count-spatial model output must contain spatial_logits and count")
+    prob = _spatial_prob_from_logits(
+        output["spatial_logits"],
+        batch["valid_mask"],
+        temperature=float(spatial_temperature),
+        eps=float(eps),
+    )
+    count = output["count"].reshape(-1, 1, 1, 1)
+    return prob * count
+
+
+class CountSpatialDensityLoss(nn.Module):
+    """Loss for density = predicted_count * masked spatial probability."""
+
+    def __init__(self, config: CountSpatialLossConfig | None = None) -> None:
+        super().__init__()
+        self.config = config or CountSpatialLossConfig()
+        self.last_components: dict[str, float] = {}
+
+    def density_from_output(self, output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
+        return density_from_model_output(
+            output,
+            batch,
+            spatial_temperature=float(self.config.spatial_temperature),
+            eps=float(self.config.eps),
+        )
+
+    def forward(self, output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
+        if torch.is_tensor(output):
+            raise ValueError("count_spatial_density_loss requires a dict output with spatial_logits and count")
+        target = batch["target"]
+        valid_mask = batch["valid_mask"]
+        cfg = self.config
+
+        pred_density = self.density_from_output(output, batch)
+        pred_prob = _spatial_prob_from_logits(
+            output["spatial_logits"],
+            valid_mask,
+            temperature=float(cfg.spatial_temperature),
+            eps=float(cfg.eps),
+        )
+        target_mass = _apply_mask(target, valid_mask)
+        target_count = target_mass.flatten(1).sum(dim=1)
+        pred_count = output["count"].reshape(-1)
+
+        count = _count_error_loss(
+            pred_count,
+            target_count,
+            loss_name=cfg.count_loss,
+            huber_delta=float(cfg.count_huber_delta),
+            normalizer=1.0,
+            eps=float(cfg.eps),
+        )
+
+        target_prob = target_mass / torch.clamp(target_count.reshape(-1, 1, 1, 1), min=float(cfg.eps))
+        positive = (target_count > float(cfg.min_target_count_for_spatial)).to(dtype=target.dtype).reshape(-1, 1, 1, 1)
+        normalized = str(cfg.spatial_loss).lower()
+        if normalized in {"kl", "kld", "kl_div"}:
+            spatial_element = target_prob * (torch.log(torch.clamp(target_prob, min=float(cfg.eps))) - torch.log(torch.clamp(pred_prob, min=float(cfg.eps))))
+        elif normalized in {"ce", "cross_entropy", "nll"}:
+            spatial_element = -target_prob * torch.log(torch.clamp(pred_prob, min=float(cfg.eps)))
+        else:
+            raise ValueError(f"Unsupported spatial loss: {cfg.spatial_loss}")
+        spatial_per_sample = spatial_element.flatten(1).sum(dim=1)
+        positive_flat = positive.reshape(-1)
+        spatial = (spatial_per_sample * positive_flat).sum() / torch.clamp(positive_flat.sum(), min=1.0)
+
+        density = weighted_density_loss(
+            pred_density,
+            target,
+            valid_mask,
+            loss_name=cfg.density_loss,
+            huber_delta=float(cfg.huber_delta),
+            eps=float(cfg.eps),
+        )
+        background = background_suppression_loss(
+            pred_density,
+            target,
+            valid_mask,
+            target_threshold=float(cfg.background_target_threshold),
+            eps=float(cfg.eps),
+        )
+        total = (
+            float(cfg.count_weight) * count
+            + float(cfg.spatial_weight) * spatial
+            + float(cfg.density_weight) * density
+            + float(cfg.background_weight) * background
+        )
+        if bool(cfg.report_components):
+            self.last_components = {
+                "loss_total": float(total.detach().cpu()),
+                "loss_count": float(count.detach().cpu()),
+                "loss_spatial": float(spatial.detach().cpu()),
+                "loss_density": float(density.detach().cpu()),
+                "loss_background": float(background.detach().cpu()),
+                "loss_weight_count": float(cfg.count_weight),
+                "loss_weight_spatial": float(cfg.spatial_weight),
+                "loss_weight_density": float(cfg.density_weight),
+                "loss_weight_background": float(cfg.background_weight),
+                "pred_count_mean": float(pred_count.detach().mean().cpu()),
+                "target_count_mean": float(target_count.detach().mean().cpu()),
+            }
+        return total
+
+
+def build_density_loss(
+    config: dict[str, Any] | DensityLossConfig | CountSpatialLossConfig | None = None,
+) -> nn.Module:
+    if isinstance(config, CountSpatialLossConfig):
+        return CountSpatialDensityLoss(config)
     if isinstance(config, DensityLossConfig):
         return StructuredDensityLoss(config)
+    if isinstance(config, dict) and str(config.get("name", "structured_density_loss")).lower() in {
+        "count_spatial_density_loss",
+        "count_spatial",
+        "count_spatial_loss",
+    }:
+        return CountSpatialDensityLoss(count_spatial_loss_config_from_dict(config))
     return StructuredDensityLoss(density_loss_config_from_dict(config))

@@ -305,6 +305,23 @@ def build_scene(
     return SceneBuildResult(record=record, patches=selected, metrics=metrics)
 
 
+def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
+    if torch.is_tensor(output):
+        return output
+    if "density" in output:
+        return output["density"]
+    if "spatial_logits" not in output or "count" not in output:
+        raise ValueError("Model output dict must contain density or spatial_logits/count")
+    valid_mask = batch["valid_mask"]
+    logits = torch.where(valid_mask > 0, output["spatial_logits"], torch.full_like(output["spatial_logits"], -1.0e9))
+    flat_logits = logits.flatten(1)
+    flat_valid = (valid_mask > 0).flatten(1).to(dtype=logits.dtype)
+    max_logits = flat_logits.max(dim=1, keepdim=True).values
+    exp_logits = torch.exp(flat_logits - max_logits) * flat_valid
+    prob = (exp_logits / torch.clamp(exp_logits.sum(dim=1, keepdim=True), min=1.0e-8)).reshape_as(logits)
+    return prob * output["count"].reshape(-1, 1, 1, 1)
+
+
 def make_loader(patches: list[DensityPatch], batch_size: int, size_divisor: int, shuffle: bool, num_workers: int) -> DataLoader:
     return DataLoader(
         DensityPatchDataset(patches),
@@ -353,8 +370,8 @@ def run_batches(
                 if optimizer is None:
                     raise ValueError("optimizer is required in train mode")
                 optimizer.zero_grad(set_to_none=True)
-            pred = model(batch["x"])
-            loss = loss_fn(pred, batch)
+            pred_output = model(batch["x"])
+            loss = loss_fn(pred_output, batch)
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite loss encountered in {'train' if train else 'eval'} mode")
             if train:
@@ -362,10 +379,11 @@ def run_batches(
                 if float(grad_clip_norm) > 0.0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip_norm))
                 optimizer.step()
+            pred_density = loss_fn.density_from_output(pred_output, batch) if hasattr(loss_fn, "density_from_output") else pred_output
             losses.append(float(loss.detach().cpu()))
             if getattr(loss_fn, "last_components", None):
                 components.append(dict(loss_fn.last_components))
-            pred_sum += float((pred.detach() * batch["valid_mask"]).sum().cpu())
+            pred_sum += float((pred_density.detach() * batch["valid_mask"]).sum().cpu())
             target_sum += float((batch["target"] * batch["valid_mask"]).sum().cpu())
             patch_count += len(batch["metadata"])
     return {
@@ -458,7 +476,9 @@ def save_inference_previews(
     with torch.no_grad():
         for batch in loader:
             batch = move_density_batch_to_device(batch, device)
-            pred = model(batch["x"]).detach().cpu().numpy()
+            pred_output = model(batch["x"])
+            pred_tensor = infer_density_from_output(pred_output, batch)
+            pred = pred_tensor.detach().cpu().numpy()
             x = batch["x"].detach().cpu().numpy()
             target = batch["target"].detach().cpu().numpy()
             valid = batch["valid_mask"].detach().cpu().numpy()

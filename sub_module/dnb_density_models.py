@@ -32,6 +32,10 @@ def _apply_output_activation(x: torch.Tensor, activation: str) -> torch.Tensor:
         return F.softplus(x)
     if activation == "relu":
         return F.relu(x)
+    if activation in {"exp", "log_count_exp"}:
+        return torch.exp(torch.clamp(x, min=-20.0, max=20.0))
+    if activation in {"expm1", "log_count_expm1"}:
+        return torch.expm1(torch.clamp(x, min=0.0, max=20.0))
     if activation in {"identity", "linear", "none", ""}:
         return x
     raise ValueError(f"Unsupported output activation: {activation}")
@@ -171,10 +175,83 @@ class MaskedDilatedDensityNet(nn.Module):
         return _apply_output_activation(self.head(x), self.activation)
 
 
+class CountSpatialDensityUNet(nn.Module):
+    """U-Net that separates total-count prediction from spatial density allocation."""
+
+    def __init__(
+        self,
+        in_channels: int = 6,
+        out_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 4,
+        count_hidden_channels: int | None = None,
+        count_activation: str = "softplus",
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        depth = max(int(depth), 2)
+        base_channels = int(base_channels)
+        channels = [base_channels * (2**idx) for idx in range(depth)]
+        self.config = {
+            "name": "CountSpatialDensityUNet",
+            "in_channels": int(in_channels),
+            "out_channels": int(out_channels),
+            "base_channels": base_channels,
+            "depth": depth,
+            "count_hidden_channels": count_hidden_channels,
+            "count_activation": str(count_activation),
+            "dropout": float(dropout),
+        }
+        self.count_activation = str(count_activation)
+        self.encoder = nn.ModuleList()
+        self.encoder.append(ResidualConvBlock(int(in_channels), channels[0], dropout=float(dropout)))
+        for idx in range(1, depth):
+            self.encoder.append(ResidualConvBlock(channels[idx - 1], channels[idx], dropout=float(dropout)))
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.decoder = nn.ModuleList()
+        for idx in range(depth - 1, 0, -1):
+            self.decoder.append(UpBlock(channels[idx], channels[idx - 1], channels[idx - 1], dropout=float(dropout)))
+        self.spatial_head = nn.Conv2d(channels[0], int(out_channels), kernel_size=1)
+
+        hidden = int(count_hidden_channels or max(channels[-1] // 2, base_channels))
+        self.count_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels[-1], hidden),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
+            nn.Linear(hidden, 1),
+        )
+
+    def architecture_dict(self) -> dict[str, Any]:
+        return dict(self.config)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        skips: list[torch.Tensor] = []
+        for idx, block in enumerate(self.encoder):
+            if idx > 0:
+                x = self.pool(x)
+            x = block(x)
+            skips.append(x)
+        bottleneck = skips[-1]
+        decoded = bottleneck
+        for block, skip in zip(self.decoder, reversed(skips[:-1])):
+            decoded = block(decoded, skip)
+        count_raw = self.count_head(bottleneck)
+        count = _apply_output_activation(count_raw, self.count_activation)
+        return {
+            "spatial_logits": self.spatial_head(decoded),
+            "count": count,
+            "count_raw": count_raw,
+        }
+
+
 def build_density_model(name: str, **kwargs: Any) -> nn.Module:
     normalized = str(name).strip().lower()
     if normalized in {"main", "unet", "resunet", "masked_density_unet", "maskeddensityunet"}:
         return MaskedDensityUNet(**kwargs)
+    if normalized in {"count_spatial", "count_spatial_unet", "countspatialdensityunet", "count_spatial_density_unet"}:
+        return CountSpatialDensityUNet(**kwargs)
     if normalized in {"fast", "dilated", "csrnet", "masked_dilated_density_net", "maskeddilateddensitynet"}:
         kwargs = dict(kwargs)
         kwargs.pop("depth", None)
