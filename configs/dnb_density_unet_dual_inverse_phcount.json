@@ -1,0 +1,158 @@
+{
+  "schema_version": 2,
+  "experiment_family": "dnb_density_heatmap",
+  "role": "main",
+  "status": "pilot_dual_inverse_radiance_with_ph_count_context",
+  "locked_on": "2026-06-03",
+  "locked_decision": "Use KR EEZ+12nm all_touched sea mask, factor-4 max-pooled PH anchor extraction, PH-anchor-first exact-cover sea partitioning, and fallback grid ownership for all remaining valid sea pixels.",
+  "description": "Dual-input count-spatial U-Net pilot. Spatial branch uses arctan-encoded brightness + PH channels; count branch uses raw inverse radiance plus the same PH context channels. The inverse radiance channel still uses no clipping, floor, log, or robust normalization.",
+  "device": "mps",
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
+    "all_touched": true
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 0,
+    "min_nodes": 4,
+    "max_nodes": 2500,
+    "remove_edge": false,
+    "drop_nested": false
+  },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
+  "patching": {
+    "padding_pixels": 16,
+    "size_divisor": 16,
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "attention_distance_sigma": 4.0,
+    "attention_base_weight": 0.25,
+    "attention_ph_weight": 0.75,
+    "input_channels": [
+      "brightness",
+      "inverse_radiance",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention"
+    ],
+    "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 96,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 16,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only.",
+    "hierarchical_ph": {
+      "enabled": true,
+      "large_min_pixels": 65536,
+      "large_min_height": 384,
+      "large_min_width": 384,
+      "child_anchor_padding_pixels": 8,
+      "child_detection_threshold": 0.5,
+      "child_analysis_threshold": 0.25,
+      "child_threshold_reference": "median",
+      "child_smooth_sigma": 0.0,
+      "child_lifetime_limit": 0.0,
+      "child_lifetime_limit_fraction": 1.0005,
+      "child_area_limit": 0,
+      "child_min_nodes": 3,
+      "child_max_nodes": 2048,
+      "child_max_candidates_per_parent": 64,
+      "keep_large_parent": false,
+      "policy": "Large H0 parent anchors are not kept as oversized training patches. Local H0 PH is rerun inside each large parent with relaxed child detection; child anchors claim local peaks first and the existing fallback grid covers any remainder."
+    }
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.5,
+    "radius_pixels": 5,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
+    "per_ship_mass": 1.0
+  },
+  "model": {
+    "name": "DualRadianceCountSpatialUNet",
+    "in_channels": 7,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "count_hidden_channels": 128,
+    "count_activation": "exp",
+    "dropout": 0.0,
+    "spatial_channel_indices": [
+      0,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "count_channel_indices": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "training": {
+    "loss": {
+      "name": "count_spatial_density_loss",
+      "rationale": "Fairer inverse-radiance ablation: the count branch receives raw inverse radiance plus the same PH context channels used by the baseline count path. This isolates encoded-versus-inverse radiometry more cleanly than the inverse-only count branch.",
+      "count_weight": 0.45,
+      "spatial_weight": 0.45,
+      "density_weight": 0.1,
+      "background_weight": 0.0,
+      "count_loss": "log_mse",
+      "count_huber_delta": 1.0,
+      "spatial_loss": "kl",
+      "spatial_temperature": 1.0,
+      "density_loss": "huber",
+      "huber_delta": 0.05,
+      "background_target_threshold": 1e-06,
+      "min_target_count_for_spatial": 1e-06
+    },
+    "batch_size": 8,
+    "epochs": 20,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip_norm": 1.0
+  },
+  "radiance_inverse": {
+    "enabled": true,
+    "source_channel": "brightness",
+    "output_channel": "inverse_radiance",
+    "formula": "1e-9 * tan((pi / 2) * encoded_brightness)",
+    "clip_before_inverse": false,
+    "floor_before_inverse": false,
+    "log_transform": false,
+    "scale": 1e-09,
+    "warning": "This is intentionally unsafe for the pilot. Count branch now also receives PH context, but inverse radiance itself still has no clip/floor/log/normalization."
+  }
+}
