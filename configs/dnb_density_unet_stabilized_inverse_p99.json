@@ -1,0 +1,141 @@
+{
+  "schema_version": 2,
+  "experiment_family": "dnb_density_heatmap",
+  "role": "main",
+  "status": "pilot_stabilized_inverse_ratio_p99_single_radiance",
+  "locked_on": "2026-06-03",
+  "locked_decision": "Use KR EEZ+12nm all_touched sea mask, factor-4 max-pooled PH anchor extraction, PH-anchor-first exact-cover sea partitioning, and fallback grid ownership for all remaining valid sea pixels.",
+  "description": "Single-radiance count-spatial U-Net pilot. PH extraction remains based on encoded brightness. Model channel 0 is stabilized_inverse_p99 = clip(tan((pi/2)*encoded_brightness) / train_p99, 0, 1), where train_p99=5.478349152183705 was estimated from the capped smoke train split.",
+  "device": "mps",
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
+    "all_touched": true
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 0,
+    "min_nodes": 4,
+    "max_nodes": 2500,
+    "remove_edge": false,
+    "drop_nested": false
+  },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
+  "patching": {
+    "padding_pixels": 16,
+    "size_divisor": 16,
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "attention_distance_sigma": 4.0,
+    "attention_base_weight": 0.25,
+    "attention_ph_weight": 0.75,
+    "input_channels": [
+      "inverse_ratio_p99_5p478349",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention"
+    ],
+    "loss_weight": "valid_crop * (0.25 + 0.75 * ph_soft_attention)"
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 96,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 16,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only.",
+    "hierarchical_ph": {
+      "enabled": true,
+      "large_min_pixels": 65536,
+      "large_min_height": 384,
+      "large_min_width": 384,
+      "child_anchor_padding_pixels": 8,
+      "child_detection_threshold": 0.5,
+      "child_analysis_threshold": 0.25,
+      "child_threshold_reference": "median",
+      "child_smooth_sigma": 0.0,
+      "child_lifetime_limit": 0.0,
+      "child_lifetime_limit_fraction": 1.0005,
+      "child_area_limit": 0,
+      "child_min_nodes": 3,
+      "child_max_nodes": 2048,
+      "child_max_candidates_per_parent": 64,
+      "keep_large_parent": false,
+      "policy": "Large H0 parent anchors are not kept as oversized training patches. Local H0 PH is rerun inside each large parent with relaxed child detection; child anchors claim local peaks first and the existing fallback grid covers any remainder."
+    }
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.5,
+    "radius_pixels": 5,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
+    "per_ship_mass": 1.0
+  },
+  "model": {
+    "name": "CountSpatialDensityUNet",
+    "in_channels": 6,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "count_hidden_channels": 128,
+    "count_activation": "exp",
+    "dropout": 0.0
+  },
+  "training": {
+    "loss": {
+      "name": "count_spatial_density_loss",
+      "rationale": "Same count-spatial objective as the good baseline, but channel 0 uses a stabilized inverse of the arctan compression: clip(tan((pi/2)*encoded)/train_p99, 0, 1). This tests a mathematically motivated single-radiance representation without dual branches.",
+      "count_weight": 0.45,
+      "spatial_weight": 0.45,
+      "density_weight": 0.1,
+      "background_weight": 0.0,
+      "count_loss": "log_mse",
+      "count_huber_delta": 1.0,
+      "spatial_loss": "kl",
+      "spatial_temperature": 1.0,
+      "density_loss": "huber",
+      "huber_delta": 0.05,
+      "background_target_threshold": 1e-06,
+      "min_target_count_for_spatial": 1e-06
+    },
+    "batch_size": 8,
+    "epochs": 20,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "grad_clip_norm": 1.0
+  },
+  "radiance_transform": {
+    "enabled": true,
+    "input_channel": "brightness",
+    "output_channel": "inverse_ratio_p99_5p478349",
+    "formula": "clip(tan((pi / 2) * encoded_brightness) / 5.478349152183705, 0, 1)",
+    "inverse_ratio_cap": 5.478349152183705,
+    "cap_source": "sampled p99 over first 6 train scenes in outputs/dnb_density/splits/density_smoke_split_10_3_2/scene_split.csv",
+    "sample_count": 6027309,
+    "patchwise_normalization": false,
+    "purpose": "Mathematically invert the arctan compression while capping the unstable tail and keeping one 0-1 radiance channel."
+  }
+}

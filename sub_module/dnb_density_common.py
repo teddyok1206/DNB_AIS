@@ -41,6 +41,20 @@ def brightness_power_from_encoded(encoded: np.ndarray, exponent: float) -> np.nd
     return powered.astype(np.float32, copy=False)
 
 
+def inverse_ratio_from_arctan_encoded(encoded: np.ndarray) -> np.ndarray:
+    arr = np.asarray(encoded, dtype=np.float32)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        ratio = np.tan((np.pi / 2.0) * arr)
+    return ratio.astype(np.float32, copy=False)
+
+
+def stabilized_inverse_ratio_from_encoded(encoded: np.ndarray, cap: float) -> np.ndarray:
+    ratio = inverse_ratio_from_arctan_encoded(encoded)
+    cap = max(float(cap), 1.0e-12)
+    scaled = ratio / cap
+    return np.clip(scaled, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _brightness_power_exponent(channel_name: str) -> float | None:
     normalized = str(channel_name).strip().lower().replace("-", "_")
     for prefix in ("brightness_gamma_", "brightness_power_", "encoded_gamma_", "encoded_power_"):
@@ -59,6 +73,10 @@ def _channel_array_for_patch(patch: "DensityPatch", channel_name: str) -> np.nda
     exponent = _brightness_power_exponent(normalized)
     if exponent is not None:
         return brightness_power_from_encoded(patch.image, exponent)
+    if normalized in {"inverse_ratio", "radiance_ratio"}:
+        return inverse_ratio_from_arctan_encoded(patch.image)
+    if normalized in {"inverse_ratio_p99_5p478349", "stabilized_inverse_p99_5p478349"}:
+        return stabilized_inverse_ratio_from_encoded(patch.image, 5.478349152183705)
     if normalized in {"inverse_radiance", "raw_inverse_radiance", "radiance"}:
         return inverse_radiance_from_arctan_encoded(patch.image)
     if normalized in {"parent_ph_mask", "parent_mask", "roi_mask", "ph_roi_mask"}:
