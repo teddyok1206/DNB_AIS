@@ -55,3 +55,14 @@ Model code, configs, design docs, and lightweight manifests belong in git. Runti
 - checkpoint paths
 
 If a checkpoint is produced from dirty code, save `git diff` into the run directory as `run_git_dirty.patch`.
+
+## Experiment Monitoring Policy
+
+When starting any long-running experiment, training run, preprocessing batch, or detached/background process:
+
+- Report the run directory as a clickable path.
+- Report the main log file as a clickable path when one exists.
+- Provide the exact command to monitor progress, usually `tail -f <run.log>`.
+- Provide the exact command to stop the run safely, for example `screen -S <session> -X quit` or `kill <pid>`.
+- If the run uses `screen`, `tmux`, `nohup`, or a similar detached mechanism, report the session name or PID.
+- Prefer unbuffered logging for Python long-runs, for example `PYTHONUNBUFFERED=1`, so monitoring commands show live progress.
