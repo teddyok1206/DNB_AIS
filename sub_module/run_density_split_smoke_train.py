@@ -31,6 +31,7 @@ from .dnb_density_common import (
 )
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
+from .dnb_density_patch_pickle_cache import load_patch_split_cache, save_patch_split_cache, split_cache_path
 from .dnb_density_preview import preview_cmap_for_name, preview_limits_for_name, robust_vmax, save_panel_grid
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_project_paths import DENSITY_OUTPUT_ROOT, ROOT, STEP3
@@ -90,6 +91,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-checkpoint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--init-spatial-checkpoint", type=Path, default=None, help="Optional count-spatial checkpoint to copy encoder/decoder/spatial_head weights from.")
     parser.add_argument("--freeze-transferred-spatial", action=argparse.BooleanOptionalAction, default=False, help="Freeze transferred encoder/decoder/spatial_head weights after initialization.")
+    parser.add_argument("--patch-cache-dir", type=Path, default=None, help="Optional directory for reusable full DensityPatch caches.")
+    parser.add_argument(
+        "--patch-cache-mode",
+        choices=["off", "read", "write", "readwrite"],
+        default="off",
+        help="Patch cache behavior. readwrite loads existing split caches and writes missing ones.",
+    )
     return parser
 
 
@@ -1003,7 +1011,25 @@ def main(argv: list[str] | None = None) -> int:
 
     all_scene_results: list[SceneBuildResult] = []
     selected_by_split: dict[str, list[DensityPatch]] = {"train": [], "val": [], "test": []}
+    cache_metadata_by_split: dict[str, Any] = {}
+    patch_cache_dir = args.patch_cache_dir.expanduser().resolve() if args.patch_cache_dir is not None else None
+    patch_cache_mode = str(args.patch_cache_mode)
     for split in ("train", "val", "test"):
+        loaded_from_cache = False
+        if patch_cache_dir is not None and patch_cache_mode in {"read", "readwrite"}:
+            cache_path = split_cache_path(patch_cache_dir, split)
+            if cache_path.exists():
+                patches, cache_metadata = load_patch_split_cache(patch_cache_dir, split)
+                selected_by_split[split] = patches
+                cache_metadata_by_split[split] = cache_metadata
+                loaded_from_cache = True
+                print(f"[cache-load] {split} patches={len(patches)} path={cache_path}")
+            elif patch_cache_mode == "read":
+                raise FileNotFoundError(f"--patch-cache-mode=read but split cache is missing: {cache_path}")
+        if loaded_from_cache:
+            continue
+
+        split_scene_results: list[SceneBuildResult] = []
         for record in grouped[split]:
             print(f"[build] {split} {record.scene_key}")
             try:
@@ -1011,12 +1037,29 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 result = SceneBuildResult(record=record, patches=[], metrics={"split": split, "scene_key": record.scene_key}, excluded_reason=f"exception:{type(exc).__name__}:{exc}")
             all_scene_results.append(result)
+            split_scene_results.append(result)
             if result.excluded_reason:
                 print(f"  [skip] {record.scene_key}: {result.excluded_reason}")
                 continue
             selected_by_split[split].extend(result.patches)
             ph_count = int(result.metrics["partition_summary"]["ph_anchor_count"])
             print(f"  [ok] ph={ph_count} selected_patches={len(result.patches)} target_sum={result.metrics['selected_target_sum']:.1f}")
+        if patch_cache_dir is not None and patch_cache_mode in {"write", "readwrite"}:
+            cache_path = save_patch_split_cache(
+                patch_cache_dir,
+                split,
+                selected_by_split[split],
+                metadata={
+                    "scene_split_csv": str(args.scene_split_csv.expanduser().resolve()),
+                    "config_path": str(args.config.expanduser().resolve()),
+                    "config_hash": config_hash,
+                    "input_scene_count": int(len(grouped[split])),
+                    "kept_scene_count": int(sum(not item.excluded_reason for item in split_scene_results)),
+                    "selected_target_sum": float(sum(patch.target_sum for patch in selected_by_split[split])),
+                    "selection_seed": int(args.selection_seed if args.selection_seed is not None else args.seed),
+                },
+            )
+            print(f"[cache-save] {split} patches={len(selected_by_split[split])} path={cache_path}")
 
     save_scene_metrics(output_dir / "scene_metrics.csv", all_scene_results)
     save_filtered_scene_split(output_dir / "filtered_scene_split.csv", all_scene_results)
@@ -1167,11 +1210,20 @@ def main(argv: list[str] | None = None) -> int:
             "max_patch_height": int(args.max_patch_height),
             "max_patch_width": int(args.max_patch_width),
         },
+        "patch_cache": {
+            "mode": patch_cache_mode,
+            "dir": None if patch_cache_dir is None else str(patch_cache_dir),
+            "metadata_by_split": cache_metadata_by_split,
+        },
         "git": git_metadata(),
         "scene_counts": {
             split: {
                 "input_scenes": int(len(grouped[split])),
-                "kept_scenes": int(sum((not item.excluded_reason) and item.record.split == split for item in all_scene_results)),
+                "kept_scenes": (
+                    cache_metadata_by_split.get(split, {}).get("metadata", {}).get("kept_scene_count")
+                    if split in cache_metadata_by_split
+                    else int(sum((not item.excluded_reason) and item.record.split == split for item in all_scene_results))
+                ),
                 "selected_patches": int(len(selected_by_split[split])),
                 "selected_target_sum": float(sum(patch.target_sum for patch in selected_by_split[split])),
             }

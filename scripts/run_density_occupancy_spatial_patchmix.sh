@@ -16,6 +16,11 @@ RUN_DIR="${RUN_DIR:-${ROOT}/outputs/dnb_density/runs/${RUN_TAG}}"
 
 mkdir -p "${SPLIT_DIR}" "${RUN_DIR}"
 
+PATCH_CACHE_ARGS=()
+if [[ -n "${PATCH_CACHE_DIR:-}" ]]; then
+  PATCH_CACHE_ARGS=(--patch-cache-dir "${PATCH_CACHE_DIR}" --patch-cache-mode "${PATCH_CACHE_MODE:-readwrite}")
+fi
+
 if [[ ! -f "${SPLIT_DIR}/scene_split.csv" ]]; then
   "${PYTHON_BIN}" -m sub_module.build_density_scene_split \
     --output-dir "${SPLIT_DIR}" \
@@ -42,4 +47,5 @@ fi
   --max-patch-width "${MAX_PATCH_WIDTH:-512}" \
   --preview-patches "${PREVIEW_PATCHES:-24}" \
   --num-workers "${NUM_WORKERS:-0}" \
+  "${PATCH_CACHE_ARGS[@]}" \
   --save-checkpoint
