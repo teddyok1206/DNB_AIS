@@ -13,12 +13,14 @@ Policy:
 
 ```text
 VIIRS DNB full-scene GeoTIFF
-AIS/bbox-derived supervision
-KR EEZ sea mask
-PH/DRUID/cripser H0 partitioning
-sum-preserving Gaussian density target
-PH-assisted CountSpatial U-Net
-continuous density-map output with count-by-integral evaluation
+AIS/GeoJSON-derived supervision
+KR EEZ + 12 nm sea mask
+cripser/DRUID-inspired H0 persistent-homology partitioning
+PH-assisted exact-cover patch construction
+Gaussian point-to-spatial target construction without PH censoring
+OccupancySpatial U-Net
+patch-level ship O/X plus positive-patch spatial-distribution learning
+full-scene occupancy evidence heatmap merge
 ```
 
 ## Core Citations
@@ -80,7 +82,7 @@ Foundational density-map counting idea: object count is recovered by integrating
 Pipeline use:
 
 ```text
-Encoder-decoder convolutional image-to-image architecture basis for patch-to-density-map inference.
+Encoder-decoder convolutional image-to-image architecture basis for patch-to-heatmap inference.
 ```
 
 [7] Y. Li, X. Zhang, and D. Chen, "CSRNet: Dilated Convolutional Neural Networks for Understanding the Highly Congested Scenes," in *Proc. IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)*, 2018, pp. 1091-1100, doi: 10.1109/CVPR.2018.00120. [Online]. Available: https://openaccess.thecvf.com/content_cvpr_2018/html/Li_CSRNet_Dilated_Convolutional_CVPR_2018_paper.html
@@ -88,7 +90,7 @@ Encoder-decoder convolutional image-to-image architecture basis for patch-to-den
 Pipeline use:
 
 ```text
-Density-map regression and count-by-sum baseline from congested-object counting literature.
+Congested-object density-map baseline kept as background for the deferred count-estimation extension; not the active architecture.
 ```
 
 [8] Z. Ma, X. Wei, X. Hong, and Y. Gong, "Bayesian Loss for Crowd Count Estimation With Point Supervision," in *Proc. IEEE/CVF International Conference on Computer Vision (ICCV)*, 2019, pp. 6142-6151, doi: 10.1109/ICCV.2019.00624. [Online]. Available: https://openaccess.thecvf.com/content_ICCV_2019/html/Ma_Bayesian_Loss_for_Crowd_Count_Estimation_With_Point_Supervision_ICCV_2019_paper.html
@@ -96,7 +98,7 @@ Density-map regression and count-by-sum baseline from congested-object counting 
 Pipeline use:
 
 ```text
-Motivates supervising expected counts from point annotations without over-trusting a single hard Gaussian target.
+Motivates using point-derived supervision while avoiding over-trust in a single hard Gaussian label map.
 ```
 
 [9] B. Wang, H. Liu, D. Samaras, and M. H. Nguyen, "Distribution Matching for Crowd Counting," in *Advances in Neural Information Processing Systems*, vol. 33, 2020. [Online]. Available: https://papers.nips.cc/paper/2020/hash/118bd558033a1016fcc82560c65cca5f-Abstract.html
@@ -104,7 +106,7 @@ Motivates supervising expected counts from point annotations without over-trusti
 Pipeline use:
 
 ```text
-Motivates separating count/mass conservation from normalized spatial distribution matching.
+Motivates the active separation between patch-level presence/mass and normalized spatial distribution matching.
 ```
 
 [10] H. Idrees, M. Tayyab, K. Athrey, D. Zhang, S. Al-Maadeed, N. Rajpoot, and M. Shah, "Composition Loss for Counting, Density Map Estimation and Localization in Dense Crowds," in *Proc. European Conference on Computer Vision (ECCV)*, 2018. [Online]. Available: https://www.ecva.net/papers/eccv_2018/papers_ECCV/html/Haroon_Idrees_Composition_Loss_for_ECCV_2018_paper.php
@@ -112,7 +114,7 @@ Motivates separating count/mass conservation from normalized spatial distributio
 Pipeline use:
 
 ```text
-Motivates composed objectives that jointly handle count, density shape, and localization.
+Motivates composing objectives for detection/presence, heatmap shape, and localization rather than relying on a single pixelwise regression term.
 ```
 
 [11] S. Kaji, T. Sudo, and K. Ahara, "Cubical Ripser: Software for computing persistent homology of image and volume data," *arXiv preprint arXiv:2005.12692*, 2020. [Online]. Available: https://arxiv.org/abs/2005.12692

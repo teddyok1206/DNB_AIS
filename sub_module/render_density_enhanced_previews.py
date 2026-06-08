@@ -16,6 +16,7 @@ import torch
 from .dnb_density_common import density_patch_collate, move_density_batch_to_device
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
+from .dnb_density_preview import preview_cmap_for_name, preview_limits_for_name, save_panel_grid
 from .run_density_split_smoke_train import (
     SceneSplitRecord,
     build_scene,
@@ -147,6 +148,8 @@ def save_enhanced_preview(
     pred: np.ndarray,
     valid: np.ndarray,
     title: str,
+    input_channels: list[str] | None = None,
+    input_arrays: np.ndarray | None = None,
 ) -> dict[str, float]:
     path.parent.mkdir(parents=True, exist_ok=True)
     valid_bool = np.asarray(valid) > 0
@@ -177,34 +180,43 @@ def save_enhanced_preview(
     overlap_vmax = max(float(np.nanpercentile(overlap, 99.5)), 1.0e-8)
     prob_vmax = robust_max([target_prob, pred_prob, spatial_overlap])
 
-    panels = [
-        ("brightness", brightness, "magma", None, None),
-        ("soft attention", attention, "viridis", 0.0, 1.0),
-        ("target density", target, "viridis", 0.0, density_vmax),
-        ("pred density", pred, "viridis", 0.0, density_vmax),
-        ("abs error", abs_error, "inferno", 0.0, error_vmax),
-        ("signed error\nblue=under red=over", signed_error, "coolwarm", -error_vmax, error_vmax),
-        ("explained target mass\nmin(pred,target)", overlap, "Greens", 0.0, overlap_vmax),
-        ("target explained fraction\nmin(pred,target)/target", target_explained_fraction, "Greens", 0.0, 1.0),
-        ("normalized spatial overlap\nmin(pred/sum,target/sum)", spatial_overlap, "Greens", 0.0, prob_vmax),
-    ]
+    panels = []
+    if input_arrays is not None and input_channels:
+        for channel_idx, channel_name in enumerate(input_channels[: input_arrays.shape[0]]):
+            arr = input_arrays[channel_idx]
+            vmin, vmax = preview_limits_for_name(channel_name, arr)
+            panels.append((f"input {channel_idx}: {channel_name}", arr, preview_cmap_for_name(channel_name), vmin, vmax))
+    else:
+        panels.extend(
+            [
+                ("brightness", brightness, "magma", None, None),
+                ("soft attention", attention, "viridis", 0.0, 1.0),
+            ]
+        )
+    panels.extend(
+        [
+            ("target occupancy/spatial density", target, "viridis", 0.0, density_vmax),
+            ("pred occupancy evidence", pred, "viridis", 0.0, density_vmax),
+            ("abs error", abs_error, "inferno", 0.0, error_vmax),
+            ("signed error\nblue=under red=over", signed_error, "coolwarm", -error_vmax, error_vmax),
+            ("explained target mass\nmin(pred,target)", overlap, "Greens", 0.0, overlap_vmax),
+            ("target explained fraction\nmin(pred,target)/target", target_explained_fraction, "Greens", 0.0, 1.0),
+            ("normalized spatial overlap\nmin(pred/sum,target/sum)", spatial_overlap, "Greens", 0.0, prob_vmax),
+            ("valid owner mask", valid.astype(np.float32, copy=False), "gray", 0.0, 1.0),
+        ]
+    )
 
-    fig, axes = plt.subplots(3, 3, figsize=(15, 12), constrained_layout=True)
-    for ax, (panel_title, arr, cmap, vmin, vmax) in zip(axes.ravel(), panels):
-        im = ax.imshow(arr, cmap=cmap, vmin=vmin, vmax=vmax)
-        ax.set_title(panel_title, fontsize=10)
-        ax.axis("off")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(
-        (
+    save_panel_grid(
+        path,
+        panels,
+        title=(
             f"{title} | pred_sum={pred_sum:.2f} target_sum={target_sum:.2f} "
             f"| target_explained={target_explained:.3f} pred_matched={pred_matched:.3f} "
             f"| spatial_overlap={spatial_overlap_sum:.3f}"
         ),
-        fontsize=12,
+        cols=4,
+        dpi=150,
     )
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
     return {
         "pred_sum": pred_sum,
         "target_sum": target_sum,
@@ -267,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
                 pred=pred[:height, :width],
                 valid=valid[:height, :width],
                 title=title,
+                input_channels=input_channels,
+                input_arrays=x[:, :height, :width],
             )
             rows.append(
                 {

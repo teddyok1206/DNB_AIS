@@ -1,5 +1,35 @@
 # DNB Density Model Scaffold
 
+## Active Path Update - 2026-06-09
+
+The active model path is now `OccupancySpatialUNet`, not direct CountSpatial regression.
+
+Current active contract:
+
+```text
+input: 7-channel DNB/PH patch
+  brightness
+  parent_ph_mask
+  child_ph_union_mask
+  ph_seed_map
+  ph_persistence_map
+  ph_soft_attention
+  anchor_lifetime_map
+
+model output:
+  occupancy_logit -> P(ship exists in patch)
+  spatial_logits -> S(pixel | positive patch, valid owner pixels)
+
+merged heatmap:
+  Y_pred = sigmoid(occupancy_logit) * softmax(spatial_logits over valid owner pixels)
+```
+
+PH remains a structure/input prior and optional lifetime confidence signal. It does not censor GT labels.
+
+The older count-density sections below are retained as historical design notes and as a guide for a future conditional count head. They should not be presented as the active final-report method.
+
+## Historical Count-Spatial Scaffold
+
 This scaffold now uses the PH hierarchy as a rigid region/structure prior and trains a U-Net density regressor on crop-level targets.
 
 ## Active Direction

@@ -31,6 +31,7 @@ from .dnb_density_common import (
 )
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
+from .dnb_density_preview import preview_cmap_for_name, preview_limits_for_name, robust_vmax, save_panel_grid
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_project_paths import DENSITY_OUTPUT_ROOT, ROOT, STEP3
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
@@ -916,32 +917,43 @@ def save_inference_previews(
             target_tensor = target_density_for_metrics(loss_fn, batch)
             target = target_tensor.detach().cpu().numpy()
             valid = batch["valid_mask"].detach().cpu().numpy()
-            attention = batch["soft_attention"].detach().cpu().numpy()
+            channel_names = [str(name) for name in batch.get("input_channels", input_channels or [])]
+            if not channel_names:
+                channel_names = [f"channel_{channel_idx}" for channel_idx in range(x.shape[1])]
             for idx, meta in enumerate(batch["metadata"]):
                 height, width = [int(v) for v in meta["shape"]]
-                panels = [
-                    ("brightness", x[idx, 0, :height, :width], "magma"),
-                    ("soft attention", attention[idx, 0, :height, :width], "viridis"),
-                    ("target density", target[idx, 0, :height, :width], "viridis"),
-                    ("pred density", pred[idx, 0, :height, :width], "viridis"),
-                    ("abs error", np.abs(pred[idx, 0, :height, :width] - target[idx, 0, :height, :width]), "inferno"),
-                    ("valid owner mask", valid[idx, 0, :height, :width], "gray"),
-                ]
-                fig, axes = plt.subplots(2, 3, figsize=(13, 8), constrained_layout=True)
-                for ax, (title, arr, cmap) in zip(axes.ravel(), panels):
-                    im = ax.imshow(arr, cmap=cmap)
-                    ax.set_title(title)
-                    ax.axis("off")
-                    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-                pred_sum = float((pred[idx, 0, :height, :width] * valid[idx, 0, :height, :width]).sum())
-                target_sum = float((target[idx, 0, :height, :width] * valid[idx, 0, :height, :width]).sum())
-                fig.suptitle(
-                    f"{meta['partition_kind']} | scene-partition {meta.get('partition_id')} | pred_sum={pred_sum:.2f} | target_sum={target_sum:.2f}",
-                    fontsize=12,
+                pred_arr = pred[idx, 0, :height, :width]
+                target_arr = target[idx, 0, :height, :width]
+                valid_arr = valid[idx, 0, :height, :width]
+                density_vmax = robust_vmax([pred_arr, target_arr])
+                error_arr = np.abs(pred_arr - target_arr)
+                error_vmax = robust_vmax([error_arr])
+                panels = []
+                for channel_idx, channel_name in enumerate(channel_names[: x.shape[1]]):
+                    arr = x[idx, channel_idx, :height, :width]
+                    vmin, vmax = preview_limits_for_name(channel_name, arr)
+                    panels.append((f"input {channel_idx}: {channel_name}", arr, preview_cmap_for_name(channel_name), vmin, vmax))
+                panels.extend(
+                    [
+                        ("target occupancy/spatial density", target_arr, "viridis", 0.0, density_vmax),
+                        ("pred occupancy evidence", pred_arr, "viridis", 0.0, density_vmax),
+                        ("abs error", error_arr, "inferno", 0.0, error_vmax),
+                        ("valid owner mask", valid_arr, "gray", 0.0, 1.0),
+                    ]
                 )
+                pred_sum = float((pred_arr * valid_arr).sum())
+                target_sum = float((target_arr * valid_arr).sum())
                 path = output_dir / f"inference_preview_{saved:03d}_{meta['partition_kind']}_{meta.get('partition_id')}.png"
-                fig.savefig(path, dpi=150)
-                plt.close(fig)
+                save_panel_grid(
+                    path,
+                    panels,
+                    title=(
+                        f"{meta['partition_kind']} | scene-partition {meta.get('partition_id')} "
+                        f"| pred_sum={pred_sum:.2f} | target_sum={target_sum:.2f}"
+                    ),
+                    cols=4,
+                    dpi=150,
+                )
                 paths.append(str(path))
                 saved += 1
                 if saved >= int(limit):
