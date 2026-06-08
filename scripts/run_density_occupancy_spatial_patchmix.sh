@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${DNB_AIS_PYTHON:-/Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python}"
 RUN_TAG="${RUN_TAG:-occupancy_spatial_patchmix64_$(date +%Y%m%d_%H%M%S)}"
+CONFIG_PATH="${CONFIG_PATH:-${ROOT}/configs/dnb_density_unet_occupancy_spatial.json}"
 
 export PYTHONPATH="${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTORCH_ENABLE_MPS_FALLBACK="${PYTORCH_ENABLE_MPS_FALLBACK:-0}"
@@ -25,7 +26,7 @@ fi
 
 "${PYTHON_BIN}" -m sub_module.run_density_split_smoke_train \
   --scene-split-csv "${SPLIT_DIR}/scene_split.csv" \
-  --config "${ROOT}/configs/dnb_density_unet_occupancy_spatial.json" \
+  --config "${CONFIG_PATH}" \
   --output-dir "${RUN_DIR}" \
   --device mps \
   --epochs "${EPOCHS:-20}" \
