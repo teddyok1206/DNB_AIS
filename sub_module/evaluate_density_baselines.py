@@ -9,7 +9,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .render_density_full_scene_predictions import build_all_scene_patches
-from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, ROOT, STEP3
+from .dnb_project_paths import ROOT, STEP3
 from .run_density_split_smoke_train import SceneSplitRecord, read_json, read_scene_split
 from .dnb_pipeline_core import GroundTruthResolver
 
@@ -17,14 +17,12 @@ from .dnb_pipeline_core import GroundTruthResolver
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate train-calibrated heuristic density baselines on a scene split.")
     parser.add_argument("--scene-split-csv", type=Path, required=True)
-    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_count_spatial.json")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_occupancy_spatial.json")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "dnb_density" / "baseline_evaluations")
     parser.add_argument("--calibration-split", choices=["train", "val", "test"], default="train")
     parser.add_argument("--eval-split", choices=["train", "val", "test"], default="test")
     parser.add_argument("--limit-calibration-scenes", type=int, default=0)
     parser.add_argument("--limit-eval-scenes", type=int, default=0)
-    parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     return parser
 
 
@@ -205,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, STEP3 / "bboxes_JPSS-2")
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
     calibration = calibrate_baselines(calibration_records, config=config, resolver=resolver)
     scene_rows: list[dict[str, Any]] = []
     for record in eval_records:

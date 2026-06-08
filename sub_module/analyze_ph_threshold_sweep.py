@@ -15,15 +15,14 @@ import numpy as np
 
 from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig
 from .dnb_density_common import DensityPatch, DensityPatchConfig, DensityTargetConfig, build_density_patches
+from .dnb_density_preview import save_density_patch_previews
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
+from .dnb_project_paths import ROOT, STEP3
 from .kr_sea_mask import apply_kr_sea_mask
-from .run_density_smoke import ROOT, STEP3, save_density_patch_previews
 
 
-DEFAULT_SCENE_TIF = STEP3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_batch_1.tif"
+DEFAULT_SCENE_TIF = STEP3 / "A2025001_1754_021.tif"
 DEFAULT_GEOJSON = STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson"
-DEFAULT_METADATA = STEP3 / "metadata_JPSS-2.csv"
-DEFAULT_SHIPS_DB = Path.home() / "ships" / "ships.db"
 
 
 @dataclass(frozen=True)
@@ -84,8 +83,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sweep PH thresholds for hierarchical U-Net region proposals.")
     parser.add_argument("--scene-tif", type=Path, default=DEFAULT_SCENE_TIF)
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
-    parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--kr-eez-mask", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--kr-eez-step3-dir", type=Path, default=STEP3)
     parser.add_argument("--kr-eez-crop-to-bounds", action=argparse.BooleanOptionalAction, default=True)
@@ -334,7 +331,7 @@ def main() -> int:
         sea_mask_metadata = mask_result.metadata
     else:
         scene = SceneRaster.load(args.scene_tif)
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, args.gt_geojson.parent)
+    resolver = GroundTruthResolver(args.gt_geojson.parent)
     gt_path = resolver.resolve_geojson(scene, args.gt_geojson)
     gt_count_map = resolver.rasterize_counts(scene, resolver.load_points(gt_path))
 

@@ -18,15 +18,17 @@ from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_scene_partition import ScenePartition, ScenePartitionConfig, build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask
-from .run_density_smoke import DEFAULT_GEOJSON, DEFAULT_METADATA, DEFAULT_SCENE_TIF, DEFAULT_SHIPS_DB, ROOT, STEP3
+from .dnb_project_paths import ROOT, STEP3
+
+
+DEFAULT_SCENE_TIF = STEP3 / "A2025001_1754_021.tif"
+DEFAULT_GEOJSON = STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson"
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect PH-anchor plus fallback-grid sea-domain partitioning.")
     parser.add_argument("--scene-tif", type=Path, default=DEFAULT_SCENE_TIF)
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
-    parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "outputs" / "scene_partition")
     parser.add_argument("--kr-eez-mask", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--kr-eez-step3-dir", type=Path, default=STEP3)
@@ -158,7 +160,7 @@ def main() -> int:
     else:
         scene = SceneRaster.load(args.scene_tif)
 
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, args.gt_geojson.parent)
+    resolver = GroundTruthResolver(args.gt_geojson.parent)
     gt_path = resolver.resolve_geojson(scene, args.gt_geojson)
     gt_count_map = resolver.rasterize_counts(scene, resolver.load_points(gt_path))
 

@@ -105,3 +105,12 @@ scripts/run_density_conditional_count_spatial_patchmix.sh
 - `sub_module/dnb_density_models.py`
 - `sub_module/dnb_density_losses.py`
 - `sub_module/run_density_split_smoke_train.py`
+
+## Archived Legacy References
+
+The retired count, inverse-radiance, and fast-dilated configs/scripts were moved out of the active `configs/` and `scripts/` directories:
+
+- `_archive/legacy_density_configs_20260608/configs/`
+- `_archive/legacy_density_configs_20260608/scripts/`
+
+Use them only as historical references when designing the future conditional count head.

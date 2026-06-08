@@ -16,7 +16,7 @@ import torch
 STAGE_ORDER = [
     "preprocess",
     "scene_load",
-    "druid",
+    "ph",
     "graph",
     "train",
     "infer",
@@ -82,7 +82,7 @@ def stable_json_dumps(obj: Any) -> str:
 def build_cache_key(
     scene_key: str,
     preprocess_config: Any,
-    druid_config: Any,
+    ph_config: Any,
     graph_config: Any,
     *,
     version: str = "v1",
@@ -91,7 +91,7 @@ def build_cache_key(
         "version": str(version),
         "scene_key": str(scene_key),
         "preprocess": _to_serializable(preprocess_config),
-        "druid": _to_serializable(druid_config),
+        "ph": _to_serializable(ph_config),
         "graph": _to_serializable(graph_config),
     }
     digest = hashlib.sha256(stable_json_dumps(payload).encode("utf-8")).hexdigest()

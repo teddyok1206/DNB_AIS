@@ -23,6 +23,7 @@ The GAT executable code path has been removed from active source. Historical GAT
 - Deferred target: direct ship-count regression. See `docs/count_reintroduction/COUNT_HEAD_REINTRODUCTION_PLAN.md`.
 - Preferred device: Apple MPS on the M2 Max MacBook Pro.
 - Runtime outputs, checkpoints, GeoTIFFs, NetCDFs, DB files, NumPy arrays, and bulk bbox outputs are intentionally not tracked by git.
+- Retired count/inverse/fast-density configs and scripts live under `_archive/legacy_density_configs_20260608/`.
 
 ## Repository Layout
 
@@ -128,6 +129,9 @@ MAX_SCENES_PER_SPLIT=30 \
 MAX_PATCHES_PER_SCENE=64 \
 MAX_PH_PATCHES_PER_SCENE=48 \
 MAX_FALLBACK_PATCHES_PER_SCENE=16 \
+POSITIVE_PATCHES_PER_SCENE=24 \
+NEGATIVE_PATCHES_PER_SCENE=24 \
+SELECTION_SEED=20260608 \
 bash scripts/run_density_occupancy_spatial_patchmix.sh
 ```
 
@@ -152,7 +156,7 @@ PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
   -m sub_module.render_density_enhanced_previews \
   --run-dir outputs/dnb_density/runs/<run_tag> \
   --split test \
-  --checkpoint-kind best_val_loss \
+  --checkpoint-kind best_val_occupancy_f1 \
   --device mps
 ```
 
@@ -165,7 +169,7 @@ PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
   -m sub_module.render_density_full_scene_predictions \
   --run-dir outputs/dnb_density/runs/<run_tag> \
   --split test \
-  --checkpoint-kind best_val_loss \
+  --checkpoint-kind best_val_occupancy_f1 \
   --limit-scenes 3 \
   --device mps
 ```
@@ -176,7 +180,7 @@ Heuristic baseline evaluation:
 PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
   -m sub_module.evaluate_density_baselines \
   --scene-split-csv outputs/dnb_density/splits/density_smoke_split_10_3_2/scene_split.csv \
-  --config configs/dnb_density_unet_count_spatial.json \
+  --config configs/dnb_density_unet_occupancy_spatial.json \
   --calibration-split train \
   --eval-split test
 ```

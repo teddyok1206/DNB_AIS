@@ -1,6 +1,6 @@
 from .dnb_pipeline_core import (
-    DruidCluster,
-    DruidClusterStore,
+    PHCluster,
+    PHClusterStore,
     GroundTruthResolver,
     SceneRaster,
     extract_scene_key,
@@ -51,8 +51,8 @@ from .dnb_ph_downsample import (
 )
 
 __all__ = [
-    "DruidCluster",
-    "DruidClusterStore",
+    "PHCluster",
+    "PHClusterStore",
     "GroundTruthResolver",
     "SceneRaster",
     "extract_scene_key",

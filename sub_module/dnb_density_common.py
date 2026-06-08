@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from scipy.ndimage import distance_transform_edt
 from torch.utils.data import Dataset
 
-from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
 
 DEFAULT_INPUT_CHANNELS = (
     "brightness",
@@ -210,14 +210,14 @@ def _crop_bounds(
     )
 
 
-def _cluster_coords_set(cluster: DruidCluster) -> set[tuple[int, int]]:
+def _cluster_coords_set(cluster: PHCluster) -> set[tuple[int, int]]:
     coords = getattr(cluster, "coords_set", None)
     if coords is not None:
         return set(coords)
     return set(map(tuple, np.asarray(cluster.global_rc, dtype=np.int64).tolist()))
 
 
-def _mask_for_cluster(cluster: DruidCluster, crop_rc: tuple[int, int, int, int]) -> np.ndarray:
+def _mask_for_cluster(cluster: PHCluster, crop_rc: tuple[int, int, int, int]) -> np.ndarray:
     r0, r1, c0, c1 = [int(v) for v in crop_rc]
     mask = np.zeros((r1 - r0 + 1, c1 - c0 + 1), dtype=np.float32)
     rc = np.asarray(cluster.global_rc, dtype=np.int64)
@@ -303,7 +303,7 @@ def make_sum_preserving_density_target(
     return target
 
 
-def _cluster_passes_size(cluster: DruidCluster, min_nodes: int, max_nodes: int | None) -> bool:
+def _cluster_passes_size(cluster: PHCluster, min_nodes: int, max_nodes: int | None) -> bool:
     node_count = int(cluster.node_count)
     if node_count < int(min_nodes):
         return False
@@ -312,7 +312,7 @@ def _cluster_passes_size(cluster: DruidCluster, min_nodes: int, max_nodes: int |
     return True
 
 
-def _sort_clusters(clusters: list[DruidCluster], sort_by: str) -> list[DruidCluster]:
+def _sort_clusters(clusters: list[PHCluster], sort_by: str) -> list[PHCluster]:
     if sort_by == "lifetime":
         return sorted(clusters, key=lambda item: item.lifetime, reverse=True)
     if sort_by == "cluster_id":
@@ -322,7 +322,7 @@ def _sort_clusters(clusters: list[DruidCluster], sort_by: str) -> list[DruidClus
     raise ValueError("sort_by must be 'lifetime', 'cluster_id', or 'node_count'")
 
 
-def _select_parent_clusters(clusters: list[DruidCluster], patch_config: DensityPatchConfig) -> list[DruidCluster]:
+def _select_parent_clusters(clusters: list[PHCluster], patch_config: DensityPatchConfig) -> list[PHCluster]:
     candidates = [
         cluster
         for cluster in clusters
@@ -330,7 +330,7 @@ def _select_parent_clusters(clusters: list[DruidCluster], patch_config: DensityP
     ]
     # Select outer components first; contained smaller components become hierarchy children.
     candidates = sorted(candidates, key=lambda item: (item.node_count, item.lifetime), reverse=True)
-    selected: list[DruidCluster] = []
+    selected: list[PHCluster] = []
     selected_sets: list[set[tuple[int, int]]] = []
     for cluster in candidates:
         coords = _cluster_coords_set(cluster)
@@ -348,12 +348,12 @@ def _select_parent_clusters(clusters: list[DruidCluster], patch_config: DensityP
 
 
 def _children_for_parent(
-    parent: DruidCluster,
-    clusters: list[DruidCluster],
+    parent: PHCluster,
+    clusters: list[PHCluster],
     patch_config: DensityPatchConfig,
-) -> list[DruidCluster]:
+) -> list[PHCluster]:
     parent_coords = _cluster_coords_set(parent)
-    children: list[DruidCluster] = []
+    children: list[PHCluster] = []
     for child in clusters:
         if int(child.cluster_id) == int(parent.cluster_id):
             continue
@@ -371,7 +371,7 @@ def _children_for_parent(
 
 
 def _seed_map_for_clusters(
-    clusters: list[DruidCluster],
+    clusters: list[PHCluster],
     crop_rc: tuple[int, int, int, int],
     shape: tuple[int, int],
     *,
@@ -400,7 +400,7 @@ def _seed_map_for_clusters(
 
 
 def _persistence_map_for_clusters(
-    clusters: list[DruidCluster],
+    clusters: list[PHCluster],
     crop_rc: tuple[int, int, int, int],
     shape: tuple[int, int],
 ) -> np.ndarray:
@@ -452,9 +452,9 @@ def _loss_weight_from_attention(
 def build_density_patches(
     scene: SceneRaster,
     gt_count_map: np.ndarray,
-    cluster_store: DruidClusterStore,
+    cluster_store: PHClusterStore,
     *,
-    child_cluster_store: DruidClusterStore | None = None,
+    child_cluster_store: PHClusterStore | None = None,
     valid_mask: np.ndarray | None = None,
     patch_config: DensityPatchConfig | None = None,
     target_config: DensityTargetConfig | None = None,

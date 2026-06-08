@@ -25,8 +25,8 @@ from .run_density_split_smoke_train import (
     read_json,
     target_density_for_metrics,
 )
-from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3
 from .dnb_pipeline_core import GroundTruthResolver
+from .dnb_project_paths import STEP3
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -36,7 +36,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=24)
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_f1"], default="last")
+    parser.add_argument(
+        "--checkpoint-kind",
+        choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_mass_ratio", "best_val_occupancy_f1"],
+        default="last",
+    )
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
     return parser
 
@@ -65,6 +69,10 @@ def namespace_from_summary(summary: dict[str, Any]) -> argparse.Namespace:
         max_patches_per_scene=int(filters.get("max_patches_per_scene", 16)),
         max_ph_patches_per_scene=int(filters.get("max_ph_patches_per_scene", 0)),
         max_fallback_patches_per_scene=int(filters.get("max_fallback_patches_per_scene", 0)),
+        positive_patches_per_scene=int(filters.get("positive_patches_per_scene", 0)),
+        negative_patches_per_scene=int(filters.get("negative_patches_per_scene", 0)),
+        selection_seed=int(filters.get("selection_seed", summary.get("seed", 20260529))),
+        seed=int(summary.get("seed", 20260529)),
         max_patch_height=int(filters.get("max_patch_height", 512)),
         max_patch_width=int(filters.get("max_patch_width", 512)),
         skip_ph_anchor_zero=bool(filters.get("skip_ph_anchor_zero", True)),
@@ -224,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
 
     filtered_split = run_dir / "filtered_scene_split.csv"
     records = read_filtered_records(filtered_split, str(args.split))
-    resolver = GroundTruthResolver(DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3 / "bboxes_JPSS-2")
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
     ns = namespace_from_summary(summary)
     patches = []
     for record in records:

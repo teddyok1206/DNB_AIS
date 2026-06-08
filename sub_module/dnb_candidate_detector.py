@@ -8,12 +8,12 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter, label
 
-from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
 
 
 @dataclass
 class DnbCandidateDetectorConfig:
-    """DRUID-inspired candidate extraction for DNB ship scenes.
+    """PH candidate extraction for DNB ship scenes.
 
     The output reuses the PH cluster container consumed by the U-Net density
     pipeline.
@@ -22,7 +22,7 @@ class DnbCandidateDetectorConfig:
     backend: str = "cripser"
     detection_threshold: float = 1.0
     analysis_threshold: float = 1.0
-    threshold_reference: str = "zero"  # "zero" matches DRUID; "median" is often useful for DNB scenes.
+    threshold_reference: str = "zero"  # "zero" keeps the original PH threshold baseline; "median" is useful for DNB scenes.
     smooth_sigma: float = 0.0
     lifetime_limit: float = 0.0
     lifetime_limit_fraction: float = 1.001
@@ -137,8 +137,8 @@ def _contour_from_local_mask(local_mask: np.ndarray, rmin: int, cmin: int) -> np
     return np.column_stack([contour_xy[:, 1] + int(rmin), contour_xy[:, 0] + int(cmin)]).astype(np.int32)
 
 
-def _drop_nested(clusters: list[DruidCluster]) -> list[DruidCluster]:
-    kept: list[DruidCluster] = []
+def _drop_nested(clusters: list[PHCluster]) -> list[PHCluster]:
+    kept: list[PHCluster] = []
     for cluster in sorted(clusters, key=lambda item: item.lifetime, reverse=True):
         coords = set(map(tuple, cluster.global_rc.tolist()))
         if any(coords and coords.issubset(existing.coords_set) for existing in kept):
@@ -158,7 +158,7 @@ class DnbCandidateDetector:
         gt_count_map: np.ndarray | None = None,
         *,
         valid_mask: np.ndarray | None = None,
-    ) -> DruidClusterStore:
+    ) -> PHClusterStore:
         if gt_count_map is None:
             gt_count_map = np.zeros(scene.shape, dtype=np.float32)
         if tuple(gt_count_map.shape) != tuple(scene.shape):
@@ -169,7 +169,7 @@ class DnbCandidateDetector:
             if tuple(domain_mask.shape) != tuple(scene.shape):
                 raise ValueError(f"valid_mask shape mismatch: {domain_mask.shape} != {scene.shape}")
             if not domain_mask.any():
-                return DruidClusterStore(scene=scene, catalogue=self._empty_catalogue(), clusters=[])
+                return PHClusterStore(scene=scene, catalogue=self._empty_catalogue(), clusters=[])
 
         smooth = self._smooth(scene.image)
         if domain_mask is not None:
@@ -192,7 +192,7 @@ class DnbCandidateDetector:
             clusters = _drop_nested(clusters)
             kept_ids = {int(cluster.cluster_id) for cluster in clusters}
             catalogue = catalogue[catalogue["ID"].isin(kept_ids)].copy().reset_index(drop=True)
-        return DruidClusterStore(scene=scene, catalogue=catalogue, clusters=clusters)
+        return PHClusterStore(scene=scene, catalogue=catalogue, clusters=clusters)
 
     def _smooth(self, image: np.ndarray) -> np.ndarray:
         arr = np.asarray(image, dtype=np.float32)
@@ -286,12 +286,12 @@ class DnbCandidateDetector:
         candidates: pd.DataFrame,
         *,
         valid_mask: np.ndarray | None = None,
-    ) -> tuple[pd.DataFrame, list[DruidCluster]]:
+    ) -> tuple[pd.DataFrame, list[PHCluster]]:
         if candidates.empty:
             return self._empty_catalogue(), []
 
         rows: list[dict[str, Any]] = []
-        clusters: list[DruidCluster] = []
+        clusters: list[PHCluster] = []
         for row in candidates.itertuples(index=False):
             component = _component_mask(
                 smooth,
@@ -326,7 +326,7 @@ class DnbCandidateDetector:
             gt_patch = gt_count_map[rmin : rmax + 1, cmin : cmax + 1]
             global_rc = local_rc + np.array([rmin, cmin], dtype=np.int32)
             cluster_id = int(row.ID)
-            cluster = DruidCluster(
+            cluster = PHCluster(
                 cluster_id=cluster_id,
                 lifetime=float(row.lifetime),
                 birth=float(row.Birth),
@@ -376,7 +376,7 @@ class DnbCandidateDetector:
         return catalogue, clusters
 
 
-def candidate_store_summary(store: DruidClusterStore) -> dict[str, Any]:
+def candidate_store_summary(store: PHClusterStore) -> dict[str, Any]:
     clusters = list(store.clusters)
     node_counts = np.array([cluster.node_count for cluster in clusters], dtype=np.int64)
     gt_sums = np.array([cluster.gt_sum for cluster in clusters], dtype=np.float32)

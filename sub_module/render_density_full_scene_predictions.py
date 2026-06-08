@@ -18,9 +18,9 @@ from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
+from .dnb_project_paths import STEP3
 from .dnb_scene_partition import build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask
-from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3
 from .run_density_split_smoke_train import (
     SceneSplitRecord,
     detector_config_from_config,
@@ -43,10 +43,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scene-key", default=None, help="Optional exact scene key, e.g. A2025001_1754_021.")
     parser.add_argument("--scene-split-csv", type=Path, default=None, help="Override scene split CSV. Defaults to filtered_scene_split.csv when present.")
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_f1"], default="last")
+    parser.add_argument(
+        "--checkpoint-kind",
+        choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_mass_ratio", "best_val_occupancy_f1"],
+        default="last",
+    )
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--limit-scenes", type=int, default=1)
@@ -363,7 +365,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = args.output_dir.expanduser().resolve() if args.output_dir else run_dir / "full_scene_predictions"
     output_dir.mkdir(parents=True, exist_ok=True)
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, STEP3 / "bboxes_JPSS-2")
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
 
     metric_rows: list[dict[str, Any]] = []
     for record in records:

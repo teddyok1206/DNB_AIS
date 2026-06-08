@@ -10,7 +10,7 @@ from affine import Affine
 from rasterio.transform import array_bounds
 
 from .dnb_candidate_detector import DnbCandidateDetector, DnbCandidateDetectorConfig
-from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class PHDownsampleConfig:
 
 @dataclass(frozen=True)
 class PHAnchorStoreResult:
-    store: DruidClusterStore
+    store: PHClusterStore
     metadata: dict[str, Any]
 
 
@@ -143,13 +143,13 @@ def _bbox_contour(rmin: int, rmax: int, cmin: int, cmax: int) -> np.ndarray:
 
 
 def upsample_cluster_store(
-    low_store: DruidClusterStore,
+    low_store: PHClusterStore,
     *,
     target_scene: SceneRaster,
     gt_count_map: np.ndarray,
     target_valid_mask: np.ndarray | None = None,
     factor: int,
-) -> DruidClusterStore:
+) -> PHClusterStore:
     factor = max(int(factor), 1)
     if factor <= 1:
         return low_store
@@ -159,7 +159,7 @@ def upsample_cluster_store(
         raise ValueError(f"gt_count_map shape mismatch: {gt.shape} != {target_scene.shape}")
 
     rows: list[dict[str, Any]] = []
-    clusters: list[DruidCluster] = []
+    clusters: list[PHCluster] = []
     for low_cluster in low_store.clusters:
         full_rc = _expand_low_rc_to_full(
             low_cluster.global_rc,
@@ -180,7 +180,7 @@ def upsample_cluster_store(
         seed_c = min(max(int(low_cluster.seed_rc[1]) * factor + factor // 2, 0), target_scene.width - 1)
         if not target_domain[seed_r, seed_c]:
             seed_r, seed_c = [int(v) for v in full_rc[0].tolist()]
-        cluster = DruidCluster(
+        cluster = PHCluster(
             cluster_id=int(low_cluster.cluster_id),
             lifetime=float(low_cluster.lifetime),
             birth=float(low_cluster.birth),
@@ -219,7 +219,7 @@ def upsample_cluster_store(
                 "source_downsample_factor": int(factor),
             }
         )
-    return DruidClusterStore(scene=target_scene, catalogue=pd.DataFrame(rows), clusters=clusters)
+    return PHClusterStore(scene=target_scene, catalogue=pd.DataFrame(rows), clusters=clusters)
 
 
 def build_ph_anchor_store(

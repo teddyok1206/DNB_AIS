@@ -34,6 +34,9 @@ fi
   --max-patches-per-scene "${MAX_PATCHES_PER_SCENE:-64}" \
   --max-ph-patches-per-scene "${MAX_PH_PATCHES_PER_SCENE:-48}" \
   --max-fallback-patches-per-scene "${MAX_FALLBACK_PATCHES_PER_SCENE:-16}" \
+  --positive-patches-per-scene "${POSITIVE_PATCHES_PER_SCENE:-24}" \
+  --negative-patches-per-scene "${NEGATIVE_PATCHES_PER_SCENE:-24}" \
+  --selection-seed "${SELECTION_SEED:-20260608}" \
   --max-patch-height "${MAX_PATCH_HEIGHT:-512}" \
   --max-patch-width "${MAX_PATCH_WIDTH:-512}" \
   --preview-patches "${PREVIEW_PATCHES:-24}" \

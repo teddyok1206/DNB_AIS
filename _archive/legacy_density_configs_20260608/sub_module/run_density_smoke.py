@@ -34,10 +34,9 @@ from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 
 ROOT = Path(__file__).resolve().parents[1]
 STEP3 = ROOT / "[3]_DNB_AIS - (STEP 3)"
-DEFAULT_SCENE_TIF = STEP3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_batch_1.tif"
+DEFAULT_SCENE_TIF = STEP3 / "A2025001_1754_021.tif"
 DEFAULT_GEOJSON = STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson"
 DEFAULT_METADATA = STEP3 / "metadata_JPSS-2.csv"
-DEFAULT_SHIPS_DB = Path.home() / "ships" / "ships.db"
 
 
 def _loss_name_from_config(value: Any) -> str:
@@ -325,8 +324,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", choices=["main", "fast", "both"], default="main")
     parser.add_argument("--scene-tif", type=Path, default=DEFAULT_SCENE_TIF)
     parser.add_argument("--gt-geojson", type=Path, default=DEFAULT_GEOJSON)
-    parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--kr-eez-mask", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--kr-eez-step3-dir", type=Path, default=STEP3)
     parser.add_argument("--kr-eez-crop-to-bounds", action=argparse.BooleanOptionalAction, default=True)
@@ -544,7 +541,7 @@ def main(argv: list[str] | None = None) -> int:
         sea_mask_result = mask_result.metadata
     else:
         scene = SceneRaster.load(args.scene_tif)
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, args.gt_geojson.parent)
+    resolver = GroundTruthResolver(args.gt_geojson.parent)
     gt_path = resolver.resolve_geojson(scene, args.gt_geojson)
     gt_points = resolver.load_points(gt_path)
     gt_count_map = resolver.rasterize_counts(scene, gt_points)

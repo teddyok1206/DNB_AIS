@@ -21,7 +21,7 @@ from .dnb_density_common import (
     _soft_attention_from_masks,
     make_sum_preserving_density_target,
 )
-from .dnb_pipeline_core import DruidCluster, DruidClusterStore, SceneRaster
+from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
 
 
 @dataclass(frozen=True)
@@ -158,14 +158,14 @@ def _child_detector_config(partition_config: ScenePartitionConfig) -> DnbCandida
 
 
 def _offset_cluster_to_global(
-    cluster: DruidCluster,
+    cluster: PHCluster,
     *,
     cluster_id: int,
     scene: SceneRaster,
     gt_count_map: np.ndarray,
     row_offset: int,
     col_offset: int,
-) -> DruidCluster:
+) -> PHCluster:
     global_rc = np.asarray(cluster.global_rc, dtype=np.int32) + np.array([int(row_offset), int(col_offset)], dtype=np.int32)
     if global_rc.size == 0:
         raise ValueError("cannot offset empty child cluster")
@@ -178,7 +178,7 @@ def _offset_cluster_to_global(
     local_mask[local_rc[:, 0], local_rc[:, 1]] = 1
     contour = np.asarray(cluster.contour_rc, dtype=np.int32) + np.array([int(row_offset), int(col_offset)], dtype=np.int32)
     seed_rc = (int(cluster.seed_rc[0]) + int(row_offset), int(cluster.seed_rc[1]) + int(col_offset))
-    out = DruidCluster(
+    out = PHCluster(
         cluster_id=int(cluster_id),
         lifetime=float(cluster.lifetime),
         birth=float(cluster.birth),
@@ -196,7 +196,7 @@ def _offset_cluster_to_global(
     return out
 
 
-def _cluster_catalogue_rows(clusters: list[DruidCluster]) -> list[dict[str, Any]]:
+def _cluster_catalogue_rows(clusters: list[PHCluster]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for cluster in clusters:
         rmin, rmax, cmin, cmax = [int(v) for v in cluster.bbox_rc]
@@ -229,15 +229,15 @@ def _cluster_catalogue_rows(clusters: list[DruidCluster]) -> list[dict[str, Any]
 def build_hierarchical_child_store(
     scene: SceneRaster,
     gt_count_map: np.ndarray,
-    cluster_store: DruidClusterStore,
+    cluster_store: PHClusterStore,
     *,
     valid_mask: np.ndarray | None = None,
     patch_config: DensityPatchConfig | None = None,
     partition_config: ScenePartitionConfig | None = None,
-) -> tuple[DruidClusterStore, dict[str, Any]]:
+) -> tuple[PHClusterStore, dict[str, Any]]:
     patch_config = patch_config or DensityPatchConfig()
     partition_config = partition_config or ScenePartitionConfig()
-    empty = DruidClusterStore(scene=scene, catalogue=pd.DataFrame(), clusters=[])
+    empty = PHClusterStore(scene=scene, catalogue=pd.DataFrame(), clusters=[])
     if not bool(partition_config.hierarchical_ph_enabled):
         return empty, {"enabled": False}
 
@@ -250,7 +250,7 @@ def build_hierarchical_child_store(
     detector = DnbCandidateDetector(_child_detector_config(partition_config))
 
     next_id = max([int(cluster.cluster_id) for cluster in cluster_store.clusters] + [0]) + 1
-    child_clusters: list[DruidCluster] = []
+    child_clusters: list[PHCluster] = []
     large_parent_count = 0
     large_parent_with_children = 0
 
@@ -307,15 +307,15 @@ def build_hierarchical_child_store(
         "child_analysis_threshold": float(partition_config.hierarchical_child_analysis_threshold),
         "child_lifetime_limit_fraction": float(partition_config.hierarchical_child_lifetime_limit_fraction),
     }
-    return DruidClusterStore(scene=scene, catalogue=catalogue, clusters=child_clusters), metadata
+    return PHClusterStore(scene=scene, catalogue=catalogue, clusters=child_clusters), metadata
 
 
 def _clusters_inside_core(
-    clusters: Iterable[DruidCluster],
+    clusters: Iterable[PHCluster],
     core_rc: tuple[int, int, int, int],
-) -> list[DruidCluster]:
+) -> list[PHCluster]:
     r0, r1, c0, c1 = [int(v) for v in core_rc]
-    inside: list[DruidCluster] = []
+    inside: list[PHCluster] = []
     for cluster in clusters:
         cr0, cr1, cc0, cc1 = [int(v) for v in cluster.bbox_rc]
         if cr0 >= r0 and cr1 <= r1 and cc0 >= c0 and cc1 <= c1:
@@ -325,9 +325,9 @@ def _clusters_inside_core(
 
 def build_scene_partitions(
     scene: SceneRaster,
-    cluster_store: DruidClusterStore,
+    cluster_store: PHClusterStore,
     *,
-    child_clusters: Iterable[DruidCluster] | None = None,
+    child_clusters: Iterable[PHCluster] | None = None,
     valid_mask: np.ndarray | None = None,
     patch_config: DensityPatchConfig | None = None,
     partition_config: ScenePartitionConfig | None = None,
@@ -439,11 +439,11 @@ def _bbox_intersects(a: tuple[int, int, int, int], b: tuple[int, int, int, int])
     return not (ar1 < br0 or br1 < ar0 or ac1 < bc0 or bc1 < ac0)
 
 
-def _clusters_for_crop(clusters: Iterable[DruidCluster], crop_rc: tuple[int, int, int, int]) -> list[DruidCluster]:
+def _clusters_for_crop(clusters: Iterable[PHCluster], crop_rc: tuple[int, int, int, int]) -> list[PHCluster]:
     return [cluster for cluster in clusters if _bbox_intersects(cluster.bbox_rc, crop_rc)]
 
 
-def _union_mask_for_clusters(clusters: list[DruidCluster], crop_rc: tuple[int, int, int, int], shape: tuple[int, int]) -> np.ndarray:
+def _union_mask_for_clusters(clusters: list[PHCluster], crop_rc: tuple[int, int, int, int], shape: tuple[int, int]) -> np.ndarray:
     if not clusters:
         return np.zeros(shape, dtype=np.float32)
     masks = [_mask_for_cluster(cluster, crop_rc) for cluster in clusters]
@@ -473,9 +473,9 @@ def _soft_attention_or_zero(
 def build_partitioned_density_patches(
     scene: SceneRaster,
     gt_count_map: np.ndarray,
-    cluster_store: DruidClusterStore,
+    cluster_store: PHClusterStore,
     *,
-    child_cluster_store: DruidClusterStore | None = None,
+    child_cluster_store: PHClusterStore | None = None,
     valid_mask: np.ndarray | None = None,
     patch_config: DensityPatchConfig | None = None,
     target_config: DensityTargetConfig | None = None,

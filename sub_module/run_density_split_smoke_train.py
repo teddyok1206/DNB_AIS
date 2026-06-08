@@ -32,11 +32,18 @@ from .dnb_density_common import (
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
-from .dnb_project_paths import DENSITY_OUTPUT_ROOT
+from .dnb_project_paths import DENSITY_OUTPUT_ROOT, ROOT, STEP3
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_scene_partition import ScenePartitionConfig, build_partitioned_density_patches
 from .kr_sea_mask import apply_kr_sea_mask
-from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, ROOT, STEP3, seed_everything
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
 
 
 @dataclass(frozen=True)
@@ -57,12 +64,10 @@ class SceneBuildResult:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a short split-level U-Net train/inference smoke test.")
+    parser = argparse.ArgumentParser(description="Run split-level PH-assisted occupancy/spatial U-Net training.")
     parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2" / "scene_split.csv")
-    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_main.json")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_occupancy_spatial.json")
     parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "runs" / "density_split_smoke_train")
-    parser.add_argument("--metadata-csv", type=Path, default=STEP3 / "metadata_JPSS-2.csv")
-    parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=20260529)
     parser.add_argument("--epochs", type=int, default=1)
@@ -583,7 +588,7 @@ def average_dicts(values: list[dict[str, float]]) -> dict[str, float]:
     return {key: float(np.mean([item[key] for item in values if key in item])) for key in keys}
 
 
-def count_ratio_error(metrics: dict[str, Any], eps: float = 1.0e-8) -> float:
+def mass_ratio_error(metrics: dict[str, Any], eps: float = 1.0e-8) -> float:
     pred_sum = float(metrics.get("pred_sum") or 0.0)
     target_sum = float(metrics.get("target_sum") or 0.0)
     return abs(float(np.log((pred_sum + float(eps)) / (target_sum + float(eps)))))
@@ -617,11 +622,12 @@ def run_batches(
     target_sum = 0.0
     overlap_sum = 0.0
     patch_count = 0
-    pred_patch_counts: list[float] = []
-    target_patch_counts: list[float] = []
+    pred_patch_masses: list[float] = []
+    target_patch_masses: list[float] = []
     spatial_overlaps: list[float] = []
     occupancy_probs: list[float] = []
     occupancy_targets: list[float] = []
+    uses_occupancy_loss = hasattr(loss_fn, "occupancy_from_output")
     eps = 1.0e-8
     if train:
         model.train()
@@ -654,14 +660,14 @@ def run_batches(
             pred_sum += float(pred_masked.sum().cpu())
             target_sum += float(target_masked.sum().cpu())
             overlap_sum += float(torch.minimum(pred_masked, target_masked).sum().cpu())
-            pred_count_batch = pred_masked.flatten(1).sum(dim=1)
-            target_count_batch = target_masked.flatten(1).sum(dim=1)
-            pred_patch_counts.extend(float(v) for v in pred_count_batch.detach().cpu().tolist())
-            target_patch_counts.extend(float(v) for v in target_count_batch.detach().cpu().tolist())
-            target_positive = target_count_batch > eps
+            pred_mass_batch = pred_masked.flatten(1).sum(dim=1)
+            target_mass_batch = target_masked.flatten(1).sum(dim=1)
+            pred_patch_masses.extend(float(v) for v in pred_mass_batch.detach().cpu().tolist())
+            target_patch_masses.extend(float(v) for v in target_mass_batch.detach().cpu().tolist())
+            target_positive = target_mass_batch > eps
             if bool(target_positive.any()):
-                pred_prob = pred_masked / torch.clamp(pred_count_batch.reshape(-1, 1, 1, 1), min=eps)
-                target_prob = target_masked / torch.clamp(target_count_batch.reshape(-1, 1, 1, 1), min=eps)
+                pred_prob = pred_masked / torch.clamp(pred_mass_batch.reshape(-1, 1, 1, 1), min=eps)
+                target_prob = target_masked / torch.clamp(target_mass_batch.reshape(-1, 1, 1, 1), min=eps)
                 spatial_batch = torch.minimum(pred_prob, target_prob).flatten(1).sum(dim=1)
                 spatial_overlaps.extend(float(v) for v in spatial_batch[target_positive].detach().cpu().tolist())
             if hasattr(loss_fn, "occupancy_from_output"):
@@ -669,13 +675,13 @@ def run_batches(
                 occupancy_probs.extend(float(v) for v in occ_prob.detach().cpu().tolist())
                 occupancy_targets.extend(float(v) for v in occ_target.detach().cpu().tolist())
             patch_count += len(batch["metadata"])
-    pred_counts = np.asarray(pred_patch_counts, dtype=np.float64)
-    target_counts = np.asarray(target_patch_counts, dtype=np.float64)
-    count_error = pred_counts - target_counts if pred_counts.size else np.asarray([], dtype=np.float64)
-    positive_mask = target_counts > eps if target_counts.size else np.asarray([], dtype=bool)
+    pred_masses = np.asarray(pred_patch_masses, dtype=np.float64)
+    target_masses = np.asarray(target_patch_masses, dtype=np.float64)
+    mass_error = pred_masses - target_masses if pred_masses.size else np.asarray([], dtype=np.float64)
+    positive_mask = target_masses > eps if target_masses.size else np.asarray([], dtype=bool)
     smape = (
-        2.0 * np.abs(count_error) / np.maximum(np.abs(pred_counts) + np.abs(target_counts), eps)
-        if pred_counts.size
+        2.0 * np.abs(mass_error) / np.maximum(np.abs(pred_masses) + np.abs(target_masses), eps)
+        if pred_masses.size
         else np.asarray([], dtype=np.float64)
     )
     target_positive_count = int(positive_mask.sum()) if positive_mask.size else 0
@@ -689,18 +695,34 @@ def run_batches(
         "pred_sum": float(pred_sum),
         "target_sum": float(target_sum),
         "pred_target_ratio": pred_target_ratio,
-        "count_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
-        "count_bias": float(pred_sum - target_sum),
-        "patch_count_mae": float(np.mean(np.abs(count_error))) if count_error.size else None,
-        "patch_count_rmse": float(np.sqrt(np.mean(count_error**2))) if count_error.size else None,
-        "patch_count_bias_mean": float(np.mean(count_error)) if count_error.size else None,
-        "patch_count_smape": float(np.mean(smape)) if smape.size else None,
         "positive_patch_count": target_positive_count,
         "zero_target_patch_count": int((~positive_mask).sum()) if positive_mask.size else 0,
         "target_explained": float(overlap_sum / max(target_sum, eps)),
         "pred_matched": float(overlap_sum / max(pred_sum, eps)),
         "spatial_overlap_mean_positive": float(np.mean(spatial_overlaps)) if spatial_overlaps else None,
     }
+    if uses_occupancy_loss:
+        metrics.update(
+            {
+                "occupancy_mass_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
+                "occupancy_mass_bias": float(pred_sum - target_sum),
+                "patch_occupancy_mass_mae": float(np.mean(np.abs(mass_error))) if mass_error.size else None,
+                "patch_occupancy_mass_rmse": float(np.sqrt(np.mean(mass_error**2))) if mass_error.size else None,
+                "patch_occupancy_mass_bias_mean": float(np.mean(mass_error)) if mass_error.size else None,
+                "patch_occupancy_mass_smape": float(np.mean(smape)) if smape.size else None,
+            }
+        )
+    else:
+        metrics.update(
+            {
+                "count_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
+                "count_bias": float(pred_sum - target_sum),
+                "patch_count_mae": float(np.mean(np.abs(mass_error))) if mass_error.size else None,
+                "patch_count_rmse": float(np.sqrt(np.mean(mass_error**2))) if mass_error.size else None,
+                "patch_count_bias_mean": float(np.mean(mass_error)) if mass_error.size else None,
+                "patch_count_smape": float(np.mean(smape)) if smape.size else None,
+            }
+        )
     if occupancy_targets:
         probs = np.asarray(occupancy_probs, dtype=np.float64)
         targets = np.asarray(occupancy_targets, dtype=np.float64) > 0.5
@@ -940,7 +962,7 @@ def main(argv: list[str] | None = None) -> int:
     records = read_scene_split(args.scene_split_csv)
     grouped = group_records(records, int(args.max_scenes_per_split))
     device = resolve_required_device(str(args.device))
-    resolver = GroundTruthResolver(args.metadata_csv, args.ships_db, STEP3 / "bboxes_JPSS-2")
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
 
     print(f"[split-smoke] device={device} output_dir={output_dir}")
     print(f"[split-smoke] records train={len(grouped['train'])} val={len(grouped['val'])} test={len(grouped['test'])}")
@@ -956,6 +978,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"spatial_initialization": spatial_initialization}, ensure_ascii=False, indent=2))
     model = model.to(device)
     loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
+    uses_occupancy_loss = hasattr(loss_fn, "occupancy_from_output")
     training = config.get("training", {})
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -989,7 +1012,7 @@ def main(argv: list[str] | None = None) -> int:
     train_history: list[dict[str, Any]] = []
     best_checkpoints: dict[str, dict[str, Any]] = {}
     best_val_loss = float("inf")
-    best_val_count_ratio_error = float("inf")
+    best_val_mass_ratio_error = float("inf")
     best_val_occupancy_f1 = -float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
@@ -1035,27 +1058,29 @@ def main(argv: list[str] | None = None) -> int:
                 "epoch": int(epoch + 1),
                 "val_loss": float(val_loss),
             }
-        val_count_ratio_error = count_ratio_error(val_metrics)
-        if bool(args.save_checkpoint) and val_count_ratio_error < best_val_count_ratio_error:
-            best_val_count_ratio_error = float(val_count_ratio_error)
+        val_mass_ratio_error = mass_ratio_error(val_metrics)
+        if bool(args.save_checkpoint) and val_mass_ratio_error < best_val_mass_ratio_error:
+            best_val_mass_ratio_error = float(val_mass_ratio_error)
+            mass_selection = "best_val_occupancy_mass_ratio" if uses_occupancy_loss else "best_val_count_ratio"
+            mass_metric = "occupancy_mass_ratio_abs_log_error" if uses_occupancy_loss else "count_ratio_abs_log_error"
             checkpoint_path = save_checkpoint(
-                output_dir / "checkpoints" / "checkpoint_best_val_count_ratio.pt",
+                output_dir / "checkpoints" / f"checkpoint_{mass_selection}.pt",
                 model=model,
                 optimizer=optimizer,
                 config=config,
                 args=args,
                 train_history=train_history,
                 test_metrics={
-                    "selection": "best_val_count_ratio",
+                    "selection": mass_selection,
                     "epoch": int(epoch + 1),
                     "val": val_metrics,
-                    "count_ratio_abs_log_error": float(val_count_ratio_error),
+                    mass_metric: float(val_mass_ratio_error),
                 },
             )
-            best_checkpoints["best_val_count_ratio"] = {
+            best_checkpoints[mass_selection] = {
                 "path": checkpoint_path,
                 "epoch": int(epoch + 1),
-                "count_ratio_abs_log_error": float(val_count_ratio_error),
+                mass_metric: float(val_mass_ratio_error),
                 "pred_target_ratio": float(val_metrics.get("pred_target_ratio") or 0.0),
             }
         val_occupancy_f1 = val_metrics.get("occupancy_f1")
