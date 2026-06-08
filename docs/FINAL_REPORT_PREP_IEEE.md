@@ -188,7 +188,8 @@ Baseline rule:
   pred_spatial_map = normalize(binary_threshold_mask over valid owner pixels)
 
 Threshold candidates:
-  0.85, 0.90, 0.95 over arctan-encoded DNB brightness
+  primary sweep: 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.90, 0.95 over arctan-encoded DNB brightness
+  include 0.85, 0.90, 0.95 as high-threshold cases, but do not restrict the baseline to them because encoded DNB brightness often peaks below 0.85 in the current GeoTIFF products
 
 Selection:
   evaluate all threshold candidates on validation
@@ -261,6 +262,11 @@ Required comparison table:
 Table IV: rule-based brightness threshold baseline vs PH-assisted OccupancySpatial U-Net
 
 Rows:
+  brightness >= 0.35
+  brightness >= 0.45
+  brightness >= 0.55
+  brightness >= 0.65
+  brightness >= 0.75
   brightness >= 0.85
   brightness >= 0.90
   brightness >= 0.95
