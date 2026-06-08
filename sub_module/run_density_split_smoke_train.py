@@ -73,6 +73,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-patches-per-scene", type=int, default=16)
     parser.add_argument("--max-ph-patches-per-scene", type=int, default=0)
     parser.add_argument("--max-fallback-patches-per-scene", type=int, default=0)
+    parser.add_argument("--positive-patches-per-scene", type=int, default=0, help="When >0, sample this many target-positive patches per scene for O/X tests.")
+    parser.add_argument("--negative-patches-per-scene", type=int, default=0, help="When >0, sample this many target-empty patches per scene for O/X tests.")
+    parser.add_argument("--selection-seed", type=int, default=None, help="Optional deterministic patch-selection seed. Defaults to --seed.")
     parser.add_argument("--max-patch-height", type=int, default=512)
     parser.add_argument("--max-patch-width", type=int, default=512)
     parser.add_argument("--skip-ph-anchor-zero", action=argparse.BooleanOptionalAction, default=True)
@@ -247,6 +250,10 @@ def select_smoke_patches(
     max_patches: int,
     max_ph_patches: int = 0,
     max_fallback_patches: int = 0,
+    positive_patches: int = 0,
+    negative_patches: int = 0,
+    selection_seed: int = 0,
+    selection_key: str = "",
     max_height: int,
     max_width: int,
 ) -> tuple[list[DensityPatch], dict[str, Any]]:
@@ -271,13 +278,35 @@ def select_smoke_patches(
         "ph_anchor": [patch for patch in kept_size if patch.partition_kind in ph_kinds],
         "fallback_grid": [patch for patch in kept_size if patch.partition_kind == "fallback_grid"],
     }
+    positive_candidates = [patch for patch in kept_size if float(patch.target_sum) > 1.0e-6]
+    negative_candidates = [patch for patch in kept_size if float(patch.target_sum) <= 1.0e-6]
     candidate_ph_anchor = sum(1 for patch in kept_size if patch.partition_kind == "ph_anchor")
     candidate_ph_child = sum(1 for patch in kept_size if patch.partition_kind == "ph_child")
     for kind in by_kind:
         by_kind[kind] = sorted(by_kind[kind], key=lambda patch: (float(patch.raw_count_sum), int(patch.valid_pixels)), reverse=True)
 
-    use_kind_quotas = int(max_ph_patches) > 0 or int(max_fallback_patches) > 0
-    if use_kind_quotas:
+    use_ox_quotas = int(positive_patches) > 0 or int(negative_patches) > 0
+    if use_ox_quotas:
+        seed_material = f"{int(selection_seed)}:{selection_key}".encode("utf-8")
+        seed_value = int(hashlib.sha256(seed_material).hexdigest()[:16], 16)
+        rng = random.Random(seed_value)
+
+        def sampled(items: list[DensityPatch], limit: int) -> list[DensityPatch]:
+            shuffled = list(items)
+            rng.shuffle(shuffled)
+            if int(limit) <= 0:
+                return shuffled
+            return shuffled[: min(int(limit), len(shuffled))]
+
+        selected = []
+        selected.extend(sampled(positive_candidates, int(positive_patches)))
+        selected.extend(sampled(negative_candidates, int(negative_patches)))
+        rng.shuffle(selected)
+        if int(max_patches) > 0 and len(selected) > int(max_patches):
+            selected = selected[: int(max_patches)]
+    else:
+        use_kind_quotas = int(max_ph_patches) > 0 or int(max_fallback_patches) > 0
+    if not use_ox_quotas and use_kind_quotas:
         selected: list[DensityPatch] = []
         selected.extend(by_kind["ph_anchor"][: max(int(max_ph_patches), 0)])
         selected.extend(by_kind["fallback_grid"][: max(int(max_fallback_patches), 0)])
@@ -288,29 +317,37 @@ def select_smoke_patches(
             fill_count = int(max_patches) - len(selected)
             selected.extend(sorted(remaining, key=priority, reverse=True)[:fill_count])
         selected = within_total_limit(selected)
-    elif int(max_patches) <= 0 or len(kept_size) <= int(max_patches):
+    elif not use_ox_quotas and (int(max_patches) <= 0 or len(kept_size) <= int(max_patches)):
         selected = kept_size
-    else:
+    elif not use_ox_quotas:
         selected = sorted(kept_size, key=priority, reverse=True)[: int(max_patches)]
 
     selected_ph = sum(1 for patch in selected if patch.partition_kind in ph_kinds)
     selected_ph_anchor = sum(1 for patch in selected if patch.partition_kind == "ph_anchor")
     selected_ph_child = sum(1 for patch in selected if patch.partition_kind == "ph_child")
     selected_fallback = sum(1 for patch in selected if patch.partition_kind == "fallback_grid")
+    selected_positive = sum(1 for patch in selected if float(patch.target_sum) > 1.0e-6)
+    selected_negative = sum(1 for patch in selected if float(patch.target_sum) <= 1.0e-6)
     return selected, {
         "dropped_too_large": int(dropped_too_large),
         "dropped_by_cap": int(len(kept_size) - len(selected)),
         "kept_size_count": int(len(kept_size)),
+        "candidate_positive_patch_count": int(len(positive_candidates)),
+        "candidate_negative_patch_count": int(len(negative_candidates)),
         "candidate_ph_patch_count": int(len(by_kind["ph_anchor"])),
         "candidate_ph_anchor_count": int(candidate_ph_anchor),
         "candidate_ph_child_count": int(candidate_ph_child),
         "candidate_fallback_grid_count": int(len(by_kind["fallback_grid"])),
+        "selected_positive_patch_count": int(selected_positive),
+        "selected_negative_patch_count": int(selected_negative),
         "selected_ph_patch_count": int(selected_ph),
         "selected_ph_anchor_count": int(selected_ph_anchor),
         "selected_ph_child_count": int(selected_ph_child),
         "selected_fallback_grid_count": int(selected_fallback),
         "max_ph_patches_per_scene": int(max_ph_patches),
         "max_fallback_patches_per_scene": int(max_fallback_patches),
+        "positive_patches_per_scene": int(positive_patches),
+        "negative_patches_per_scene": int(negative_patches),
     }
 
 
@@ -362,6 +399,10 @@ def build_scene(
         max_patches=int(args.max_patches_per_scene),
         max_ph_patches=int(args.max_ph_patches_per_scene),
         max_fallback_patches=int(args.max_fallback_patches_per_scene),
+        positive_patches=int(args.positive_patches_per_scene),
+        negative_patches=int(args.negative_patches_per_scene),
+        selection_seed=int(args.selection_seed if args.selection_seed is not None else args.seed),
+        selection_key=f"{record.split}:{record.scene_key}",
         max_height=int(args.max_patch_height),
         max_width=int(args.max_patch_width),
     )
@@ -608,12 +649,18 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
         "dropped_too_large",
         "dropped_by_cap",
         "kept_size_count",
+        "candidate_positive_patch_count",
+        "candidate_negative_patch_count",
         "candidate_ph_anchor_count",
         "candidate_fallback_grid_count",
+        "selected_positive_patch_count",
+        "selected_negative_patch_count",
         "selected_ph_anchor_count",
         "selected_fallback_grid_count",
         "max_ph_patches_per_scene",
         "max_fallback_patches_per_scene",
+        "positive_patches_per_scene",
+        "negative_patches_per_scene",
     ]
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -636,12 +683,18 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
                     "dropped_too_large": int(selection.get("dropped_too_large", 0)),
                     "dropped_by_cap": int(selection.get("dropped_by_cap", 0)),
                     "kept_size_count": int(selection.get("kept_size_count", 0)),
+                    "candidate_positive_patch_count": int(selection.get("candidate_positive_patch_count", 0)),
+                    "candidate_negative_patch_count": int(selection.get("candidate_negative_patch_count", 0)),
                     "candidate_ph_anchor_count": int(selection.get("candidate_ph_anchor_count", 0)),
                     "candidate_fallback_grid_count": int(selection.get("candidate_fallback_grid_count", 0)),
+                    "selected_positive_patch_count": int(selection.get("selected_positive_patch_count", 0)),
+                    "selected_negative_patch_count": int(selection.get("selected_negative_patch_count", 0)),
                     "selected_ph_anchor_count": int(selection.get("selected_ph_anchor_count", 0)),
                     "selected_fallback_grid_count": int(selection.get("selected_fallback_grid_count", 0)),
                     "max_ph_patches_per_scene": int(selection.get("max_ph_patches_per_scene", 0)),
                     "max_fallback_patches_per_scene": int(selection.get("max_fallback_patches_per_scene", 0)),
+                    "positive_patches_per_scene": int(selection.get("positive_patches_per_scene", 0)),
+                    "negative_patches_per_scene": int(selection.get("negative_patches_per_scene", 0)),
                 }
             )
 
@@ -964,6 +1017,9 @@ def main(argv: list[str] | None = None) -> int:
             "max_patches_per_scene": int(args.max_patches_per_scene),
             "max_ph_patches_per_scene": int(args.max_ph_patches_per_scene),
             "max_fallback_patches_per_scene": int(args.max_fallback_patches_per_scene),
+            "positive_patches_per_scene": int(args.positive_patches_per_scene),
+            "negative_patches_per_scene": int(args.negative_patches_per_scene),
+            "selection_seed": int(args.selection_seed if args.selection_seed is not None else args.seed),
             "max_patch_height": int(args.max_patch_height),
             "max_patch_width": int(args.max_patch_width),
         },
