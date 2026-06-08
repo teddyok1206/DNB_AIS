@@ -204,7 +204,10 @@ class GroundTruthResolver:
 
     def _create_geojson_from_db(self, scene: SceneRaster, output_path: Path) -> None:
         center_dt = scene_key_to_center_dt(scene.key, self.metadata_csv)
-        conn = sqlite3.connect(self.ships_db_path)
+        if not self.ships_db_path.exists():
+            raise FileNotFoundError(f"Ships DB does not exist; refusing to create a new SQLite DB: {self.ships_db_path}")
+        db_uri = f"file:{self.ships_db_path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True)
         cur = conn.cursor()
         rows = cur.execute(
             """

@@ -23,7 +23,7 @@ from .run_density_smoke import ROOT, STEP3, save_density_patch_previews
 DEFAULT_SCENE_TIF = STEP3 / "DRUID_TESTING" / "TEST_5_A2025001_1754_021_batch_1.tif"
 DEFAULT_GEOJSON = STEP3 / "bboxes_JPSS-2" / "A2025001_1754_021.geojson"
 DEFAULT_METADATA = STEP3 / "metadata_JPSS-2.csv"
-DEFAULT_SHIPS_DB = STEP3 / "ships.db"
+DEFAULT_SHIPS_DB = Path.home() / "ships" / "ships.db"
 
 
 @dataclass(frozen=True)
