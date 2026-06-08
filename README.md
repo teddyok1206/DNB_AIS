@@ -2,25 +2,25 @@
 
 Research code for VIIRS DNB nighttime-light ship-density estimation using AIS-derived supervision.
 
-The active deep-learning direction is PH-assisted U-Net density heatmap prediction:
+The active deep-learning direction is PH-assisted U-Net occupancy/spatial heatmap prediction:
 
 ```text
 DNB GeoTIFF brightness + sea mask + PH hierarchy features
 -> multi-channel crop tensor
--> U-Net density model
--> per-pixel expected ship-count density heatmap
+-> U-Net occupancy/spatial model
+-> per-pixel ship-presence evidence heatmap
 ```
 
 The GAT executable code path has been removed from active source. Historical GAT notes and logs remain only in archive/log documents for design-history reference.
 
 ## Current Status
 
-- Active model family: `CountSpatialDensityUNet`.
-- Active baseline config: `configs/dnb_density_unet_count_spatial.json`.
-- Active lifetime pilot config: `configs/dnb_density_unet_count_spatial_lifetime.json`.
-- Active target: sum-preserving Gaussian density map from AIS/bbox ground truth.
+- Active model family: `OccupancySpatialUNet`.
+- Active baseline config: `configs/dnb_density_unet_occupancy_spatial.json`.
+- Active target: O/X patch occupancy plus positive-patch spatial distribution from AIS/bbox ground truth.
 - Active partitioning: PH anchors first, fallback grid second, so valid sea pixels are covered.
 - Active PH mode: H0 components from `cripser`, with hierarchical child PH splitting for oversized anchors.
+- Deferred target: direct ship-count regression. See `docs/count_reintroduction/COUNT_HEAD_REINTRODUCTION_PLAN.md`.
 - Preferred device: Apple MPS on the M2 Max MacBook Pro.
 - Runtime outputs, checkpoints, GeoTIFFs, NetCDFs, DB files, NumPy arrays, and bulk bbox outputs are intentionally not tracked by git.
 
@@ -115,22 +115,20 @@ Notebook output hygiene check:
 The current standard pilot training script is:
 
 ```bash
-bash scripts/run_density_count_spatial_scaled_patchmix.sh
-# lifetime-confidence pilot
-bash scripts/run_density_count_spatial_lifetime_patchmix.sh
+bash scripts/run_density_occupancy_spatial_patchmix.sh
 ```
 
 Useful overrides:
 
 ```bash
-RUN_TAG=count_spatial_manual_$(date +%Y%m%d_%H%M%S) \
+RUN_TAG=occupancy_spatial_manual_$(date +%Y%m%d_%H%M%S) \
 EPOCHS=20 \
 BATCH_SIZE=2 \
 MAX_SCENES_PER_SPLIT=30 \
 MAX_PATCHES_PER_SCENE=64 \
 MAX_PH_PATCHES_PER_SCENE=48 \
 MAX_FALLBACK_PATCHES_PER_SCENE=16 \
-bash scripts/run_density_count_spatial_scaled_patchmix.sh
+bash scripts/run_density_occupancy_spatial_patchmix.sh
 ```
 
 Typical run output path:
@@ -185,14 +183,14 @@ PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
 
 ## Core Method Notes
 
-The density model predicts a continuous non-negative density map, not integer count classes.
+The active model predicts continuous occupancy evidence, not integer count classes.
 
 ```text
-model(input) -> density_pred[h, w] >= 0
-ship_count(region) = sum(density_pred over region)
+model(input) -> P(ship exists in patch), p(pixel | ship exists)
+occupancy_heatmap[h, w] = P(ship exists in patch) * p(pixel | ship exists)
 ```
 
-The true ship count is integer-valued, but training remains continuous and differentiable. Count is recovered by integrating or summing the density map over a valid region.
+The patch-level prediction sum is a probability of ship presence. Direct count regression is deferred until O/X and localization are stable, then count can be reintroduced as a conditional positive-patch head.
 
 PH is used as a structural prior and partitioning mechanism, not as a hard censor for supervision. Ground-truth ships inside the crop can still contribute to the target even if strict PH masks miss them.
 
@@ -203,7 +201,8 @@ PH is used as a structural prior and partitioning mechanism, not as a hard censo
 - `docs/PH_HIERARCHY_UNET_HYBRID_DESIGN.md`: PH hierarchy and U-Net integration design.
 - `docs/DNB_DENSITY_OUTPUT_WORKSPACE_20260602.md`: output workspace organization.
 - `docs/DENSITY_PIPELINE_REVIEW_20260608.md`: full pipeline review, quantitative metrics, and performance plan.
-- `docs/experiments/density_count_spatial_good_baseline_20260602.md`: current good qualitative baseline record.
+- `docs/count_reintroduction/COUNT_HEAD_REINTRODUCTION_PLAN.md`: deferred count-head design and reintroduction criteria.
+- `docs/experiments/density_count_spatial_good_baseline_20260602.md`: historical count-spatial qualitative baseline record.
 
 ## Git Workflow
 

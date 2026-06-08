@@ -393,8 +393,8 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
         return output
     if "density" in output:
         return output["density"]
-    if "spatial_logits" not in output or "count" not in output:
-        raise ValueError("Model output dict must contain density or spatial_logits/count")
+    if "spatial_logits" not in output:
+        raise ValueError("Model output dict must contain density or spatial_logits")
     valid_mask = batch["valid_mask"]
     logits = torch.where(valid_mask > 0, output["spatial_logits"], torch.full_like(output["spatial_logits"], -1.0e9))
     flat_logits = logits.flatten(1)
@@ -402,7 +402,19 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
     max_logits = flat_logits.max(dim=1, keepdim=True).values
     exp_logits = torch.exp(flat_logits - max_logits) * flat_valid
     prob = (exp_logits / torch.clamp(exp_logits.sum(dim=1, keepdim=True), min=1.0e-8)).reshape_as(logits)
-    return prob * output["count"].reshape(-1, 1, 1, 1)
+    if "count" in output:
+        return prob * output["count"].reshape(-1, 1, 1, 1)
+    if "occupancy_logit" in output:
+        return prob * torch.sigmoid(output["occupancy_logit"].reshape(-1, 1, 1, 1))
+    if "occupancy_logits" in output:
+        return prob * torch.sigmoid(output["occupancy_logits"].reshape(-1, 1, 1, 1))
+    raise ValueError("Model output dict must contain count or occupancy_logit")
+
+
+def target_density_for_metrics(loss_fn: torch.nn.Module, batch: dict[str, Any]) -> torch.Tensor:
+    if hasattr(loss_fn, "target_density_from_batch"):
+        return loss_fn.target_density_from_batch(batch)
+    return batch["target"]
 
 
 def make_loader(
@@ -470,6 +482,8 @@ def run_batches(
     pred_patch_counts: list[float] = []
     target_patch_counts: list[float] = []
     spatial_overlaps: list[float] = []
+    occupancy_probs: list[float] = []
+    occupancy_targets: list[float] = []
     eps = 1.0e-8
     if train:
         model.train()
@@ -497,7 +511,8 @@ def run_batches(
             if getattr(loss_fn, "last_components", None):
                 components.append(dict(loss_fn.last_components))
             pred_masked = pred_density.detach() * batch["valid_mask"]
-            target_masked = batch["target"] * batch["valid_mask"]
+            target_metric_density = target_density_for_metrics(loss_fn, batch)
+            target_masked = target_metric_density.detach() * batch["valid_mask"]
             pred_sum += float(pred_masked.sum().cpu())
             target_sum += float(target_masked.sum().cpu())
             overlap_sum += float(torch.minimum(pred_masked, target_masked).sum().cpu())
@@ -511,6 +526,10 @@ def run_batches(
                 target_prob = target_masked / torch.clamp(target_count_batch.reshape(-1, 1, 1, 1), min=eps)
                 spatial_batch = torch.minimum(pred_prob, target_prob).flatten(1).sum(dim=1)
                 spatial_overlaps.extend(float(v) for v in spatial_batch[target_positive].detach().cpu().tolist())
+            if hasattr(loss_fn, "occupancy_from_output"):
+                occ_prob, occ_target = loss_fn.occupancy_from_output(pred_output, batch)
+                occupancy_probs.extend(float(v) for v in occ_prob.detach().cpu().tolist())
+                occupancy_targets.extend(float(v) for v in occ_target.detach().cpu().tolist())
             patch_count += len(batch["metadata"])
     pred_counts = np.asarray(pred_patch_counts, dtype=np.float64)
     target_counts = np.asarray(target_patch_counts, dtype=np.float64)
@@ -523,7 +542,7 @@ def run_batches(
     )
     target_positive_count = int(positive_mask.sum()) if positive_mask.size else 0
     pred_target_ratio = float(pred_sum / max(target_sum, eps))
-    return {
+    metrics = {
         "patch_count": int(patch_count),
         "batch_count": int(len(losses)),
         "loss_mean": float(np.mean(losses)) if losses else None,
@@ -544,6 +563,33 @@ def run_batches(
         "pred_matched": float(overlap_sum / max(pred_sum, eps)),
         "spatial_overlap_mean_positive": float(np.mean(spatial_overlaps)) if spatial_overlaps else None,
     }
+    if occupancy_targets:
+        probs = np.asarray(occupancy_probs, dtype=np.float64)
+        targets = np.asarray(occupancy_targets, dtype=np.float64) > 0.5
+        pred_positive = probs >= 0.5
+        tp = int(np.logical_and(pred_positive, targets).sum())
+        fp = int(np.logical_and(pred_positive, ~targets).sum())
+        fn = int(np.logical_and(~pred_positive, targets).sum())
+        tn = int(np.logical_and(~pred_positive, ~targets).sum())
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        metrics.update(
+            {
+                "occupancy_accuracy": float((tp + tn) / max(len(targets), 1)),
+                "occupancy_precision": float(precision),
+                "occupancy_recall": float(recall),
+                "occupancy_f1": float(2.0 * precision * recall / max(precision + recall, eps)),
+                "occupancy_brier": float(np.mean((probs - targets.astype(np.float64)) ** 2)),
+                "occupancy_positive_target_count": int(targets.sum()),
+                "occupancy_negative_target_count": int((~targets).sum()),
+                "occupancy_pred_positive_count": int(pred_positive.sum()),
+                "occupancy_tp": tp,
+                "occupancy_fp": fp,
+                "occupancy_fn": fn,
+                "occupancy_tn": tn,
+            }
+        )
+    return metrics
 
 
 def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
@@ -629,7 +675,7 @@ def save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "schema_version": 1,
-        "kind": "density_count_spatial_checkpoint",
+        "kind": "density_model_checkpoint",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -665,6 +711,7 @@ def save_filtered_scene_split(path: Path, results: list[SceneBuildResult]) -> No
 def save_inference_previews(
     *,
     model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
     patches: list[DensityPatch],
     output_dir: Path,
     device: torch.device,
@@ -694,7 +741,8 @@ def save_inference_previews(
             pred_tensor = infer_density_from_output(pred_output, batch)
             pred = pred_tensor.detach().cpu().numpy()
             x = batch["x"].detach().cpu().numpy()
-            target = batch["target"].detach().cpu().numpy()
+            target_tensor = target_density_for_metrics(loss_fn, batch)
+            target = target_tensor.detach().cpu().numpy()
             valid = batch["valid_mask"].detach().cpu().numpy()
             attention = batch["soft_attention"].detach().cpu().numpy()
             for idx, meta in enumerate(batch["metadata"]):
@@ -783,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
     best_checkpoints: dict[str, dict[str, Any]] = {}
     best_val_loss = float("inf")
     best_val_count_ratio_error = float("inf")
+    best_val_occupancy_f1 = -float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
             model=model,
@@ -850,6 +899,28 @@ def main(argv: list[str] | None = None) -> int:
                 "count_ratio_abs_log_error": float(val_count_ratio_error),
                 "pred_target_ratio": float(val_metrics.get("pred_target_ratio") or 0.0),
             }
+        val_occupancy_f1 = val_metrics.get("occupancy_f1")
+        if bool(args.save_checkpoint) and val_occupancy_f1 is not None and float(val_occupancy_f1) > best_val_occupancy_f1:
+            best_val_occupancy_f1 = float(val_occupancy_f1)
+            checkpoint_path = save_checkpoint(
+                output_dir / "checkpoints" / "checkpoint_best_val_occupancy_f1.pt",
+                model=model,
+                optimizer=optimizer,
+                config=config,
+                args=args,
+                train_history=train_history,
+                test_metrics={
+                    "selection": "best_val_occupancy_f1",
+                    "epoch": int(epoch + 1),
+                    "val": val_metrics,
+                    "occupancy_f1": float(val_occupancy_f1),
+                },
+            )
+            best_checkpoints["best_val_occupancy_f1"] = {
+                "path": checkpoint_path,
+                "epoch": int(epoch + 1),
+                "occupancy_f1": float(val_occupancy_f1),
+            }
         print(json.dumps(epoch_metrics, ensure_ascii=False, indent=2))
 
     test_metrics = run_batches(
@@ -865,6 +936,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     preview_paths = save_inference_previews(
         model=model,
+        loss_fn=loss_fn,
         patches=selected_by_split["test"] or selected_by_split["val"],
         output_dir=output_dir / "inference_previews",
         device=device,

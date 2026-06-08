@@ -14,13 +14,16 @@ import numpy as np
 import torch
 
 from .dnb_density_common import density_patch_collate, move_density_batch_to_device
+from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .run_density_split_smoke_train import (
     SceneSplitRecord,
     build_scene,
     infer_density_from_output,
     input_channels_from_config,
+    loss_config_from_config,
     read_json,
+    target_density_for_metrics,
 )
 from .run_density_smoke import DEFAULT_METADATA, DEFAULT_SHIPS_DB, STEP3
 from .dnb_pipeline_core import GroundTruthResolver
@@ -33,7 +36,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=24)
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio"], default="last")
+    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_f1"], default="last")
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
     return parser
 
@@ -217,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     config, config_source = load_run_config(run_dir, summary, checkpoint)
     device = torch.device(args.device)
     model = build_model_from_checkpoint(config, checkpoint, device)
+    loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
 
     filtered_split = run_dir / "filtered_scene_split.csv"
     records = read_filtered_records(filtered_split, str(args.split))
@@ -240,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             output = model(batch["x"])
             pred = infer_density_from_output(output, batch).detach().cpu().numpy()[0, 0]
             x = batch["x"].detach().cpu().numpy()[0]
-            target = batch["target"].detach().cpu().numpy()[0, 0]
+            target = target_density_for_metrics(loss_fn, batch).detach().cpu().numpy()[0, 0]
             valid = batch["valid_mask"].detach().cpu().numpy()[0, 0]
             attention = batch["soft_attention"].detach().cpu().numpy()[0, 0]
             height, width = patch.shape

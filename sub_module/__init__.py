@@ -28,6 +28,7 @@ from .dnb_density_models import (
     DualRadianceCountSpatialUNet,
     MaskedDensityUNet,
     MaskedDilatedDensityNet,
+    OccupancySpatialUNet,
     build_density_model,
 )
 from .kr_sea_mask import (
@@ -73,6 +74,7 @@ __all__ = [
     "DualRadianceCountSpatialUNet",
     "MaskedDensityUNet",
     "MaskedDilatedDensityNet",
+    "OccupancySpatialUNet",
     "build_density_model",
     "KRSeaMaskResult",
     "apply_kr_sea_mask",

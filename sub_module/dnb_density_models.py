@@ -246,6 +246,76 @@ class CountSpatialDensityUNet(nn.Module):
         }
 
 
+class OccupancySpatialUNet(nn.Module):
+    """U-Net that predicts ship presence and allocates positive mass spatially.
+
+    This is the active count-free path: the scalar head estimates whether a
+    patch contains at least one ship, and the spatial head estimates where the
+    positive evidence lies within the valid crop.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 7,
+        out_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 4,
+        occupancy_hidden_channels: int | None = None,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        depth = max(int(depth), 2)
+        base_channels = int(base_channels)
+        channels = [base_channels * (2**idx) for idx in range(depth)]
+        self.config = {
+            "name": "OccupancySpatialUNet",
+            "in_channels": int(in_channels),
+            "out_channels": int(out_channels),
+            "base_channels": base_channels,
+            "depth": depth,
+            "occupancy_hidden_channels": occupancy_hidden_channels,
+            "dropout": float(dropout),
+        }
+        self.encoder = nn.ModuleList()
+        self.encoder.append(ResidualConvBlock(int(in_channels), channels[0], dropout=float(dropout)))
+        for idx in range(1, depth):
+            self.encoder.append(ResidualConvBlock(channels[idx - 1], channels[idx], dropout=float(dropout)))
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.decoder = nn.ModuleList()
+        for idx in range(depth - 1, 0, -1):
+            self.decoder.append(UpBlock(channels[idx], channels[idx - 1], channels[idx - 1], dropout=float(dropout)))
+        self.spatial_head = nn.Conv2d(channels[0], int(out_channels), kernel_size=1)
+
+        hidden = int(occupancy_hidden_channels or max(channels[-1] // 2, base_channels))
+        self.occupancy_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels[-1], hidden),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
+            nn.Linear(hidden, 1),
+        )
+
+    def architecture_dict(self) -> dict[str, Any]:
+        return dict(self.config)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        skips: list[torch.Tensor] = []
+        for idx, block in enumerate(self.encoder):
+            if idx > 0:
+                x = self.pool(x)
+            x = block(x)
+            skips.append(x)
+        bottleneck = skips[-1]
+        decoded = bottleneck
+        for block, skip in zip(self.decoder, reversed(skips[:-1])):
+            decoded = block(decoded, skip)
+        return {
+            "spatial_logits": self.spatial_head(decoded),
+            "occupancy_logit": self.occupancy_head(bottleneck),
+        }
+
+
 class DualRadianceCountSpatialUNet(nn.Module):
     """Count-spatial U-Net with separate spatial and raw-radiance count inputs."""
 
@@ -364,6 +434,14 @@ def build_density_model(name: str, **kwargs: Any) -> nn.Module:
     normalized = str(name).strip().lower()
     if normalized in {"main", "unet", "resunet", "masked_density_unet", "maskeddensityunet"}:
         return MaskedDensityUNet(**kwargs)
+    if normalized in {
+        "occupancy_spatial",
+        "occupancy_spatial_unet",
+        "occupancyspatialunet",
+        "ship_ox_spatial",
+        "ship_presence_spatial",
+    }:
+        return OccupancySpatialUNet(**kwargs)
     if normalized in {"count_spatial", "count_spatial_unet", "countspatialdensityunet", "count_spatial_density_unet"}:
         return CountSpatialDensityUNet(**kwargs)
     if normalized in {

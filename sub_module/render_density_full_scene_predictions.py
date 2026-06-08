@@ -14,6 +14,7 @@ import numpy as np
 import torch
 
 from .dnb_density_common import DensityPatch, density_patch_collate, move_density_batch_to_device
+from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
 from .dnb_ph_downsample import PHDownsampleConfig, build_ph_anchor_store
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
@@ -25,10 +26,12 @@ from .run_density_split_smoke_train import (
     detector_config_from_config,
     infer_density_from_output,
     input_channels_from_config,
+    loss_config_from_config,
     partition_config_from_config,
     patch_config_from_config,
     read_json,
     read_scene_split,
+    target_density_for_metrics,
     target_config_from_config,
 )
 
@@ -43,7 +46,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--device", default="mps")
-    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio"], default="last")
+    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_f1"], default="last")
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--limit-scenes", type=int, default=1)
@@ -183,6 +186,7 @@ def _normalized(arr: np.ndarray, valid_mask: np.ndarray, eps: float = 1.0e-8) ->
 def merge_scene_predictions(
     *,
     model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
     patches: list[DensityPatch],
     scene_shape: tuple[int, int],
     device: torch.device,
@@ -223,12 +227,13 @@ def merge_scene_predictions(
             batch = move_density_batch_to_device(batch, device)
             output = model(batch["x"])
             pred_batch = infer_density_from_output(output, batch).detach().cpu().numpy()
+            target_batch = target_density_for_metrics(loss_fn, batch).detach().cpu().numpy()
             for idx, patch in enumerate(batch_patches):
                 height, width = patch.shape
                 r0, r1, c0, c1 = [int(v) for v in patch.crop_rc]
                 valid = np.asarray(patch.valid_mask, dtype=np.float32)[:height, :width] > 0
                 pred_local = np.asarray(pred_batch[idx, 0, :height, :width], dtype=np.float32)
-                target_local = np.asarray(patch.target_density, dtype=np.float32)[:height, :width]
+                target_local = np.asarray(target_batch[idx, 0, :height, :width], dtype=np.float32)
                 raw_local = np.asarray(patch.raw_count, dtype=np.float32)[:height, :width]
 
                 pred_view = pred_canvas[r0 : r1 + 1, c0 : c1 + 1]
@@ -343,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
     config, config_source = load_run_config(run_dir, summary, checkpoint)
     device = torch.device(str(args.device))
     model = build_model_from_checkpoint(config, checkpoint, device)
+    loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
     input_channels = input_channels_from_config(config)
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
     batch_size = int(args.batch_size if args.batch_size is not None else summary.get("batch_size", 2))
@@ -366,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [patches] {len(patches)}")
         merged = merge_scene_predictions(
             model=model,
+            loss_fn=loss_fn,
             patches=patches,
             scene_shape=scene.shape,
             device=device,
