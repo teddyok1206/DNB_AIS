@@ -66,3 +66,19 @@ When starting any long-running experiment, training run, preprocessing batch, or
 - Provide the exact command to stop the run safely, for example `screen -S <session> -X quit` or `kill <pid>`.
 - If the run uses `screen`, `tmux`, `nohup`, or a similar detached mechanism, report the session name or PID.
 - Prefer unbuffered logging for Python long-runs, for example `PYTHONUNBUFFERED=1`, so monitoring commands show live progress.
+
+## Citation And Final Report Policy
+
+When adding, removing, or correcting references for the final EESRL report:
+
+- Update `docs/FINAL_REPORT_CITATIONS_IEEE.md` first.
+- Keep only citations tied to the active DNB/AIS density pipeline in the main list.
+- Put broader background references in the optional section instead of mixing them into the core method list.
+- Do not cite retired GAT, SAR, radar, or unrelated general-ML references unless the final report explicitly discusses a discarded design path.
+- Keep citation metadata and rationale in git; do not add local PDF files from `_Readings/`.
+
+When changing final-report structure or figure/table planning:
+
+- Update `docs/FINAL_REPORT_PREP_IEEE.md`.
+- Keep the final report narrative aligned with the active PH-assisted U-Net density heatmap pipeline.
+- Treat the previous DRUID+GAT midterm direction as historical context only unless the user explicitly asks to revive it.
