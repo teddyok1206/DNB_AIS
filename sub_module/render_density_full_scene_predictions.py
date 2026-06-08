@@ -43,6 +43,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--metadata-csv", type=Path, default=DEFAULT_METADATA)
     parser.add_argument("--ships-db", type=Path, default=DEFAULT_SHIPS_DB)
     parser.add_argument("--device", default="mps")
+    parser.add_argument("--checkpoint-kind", choices=["last", "best_val_loss", "best_val_count_ratio"], default="last")
+    parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--limit-scenes", type=int, default=1)
     parser.add_argument("--max-patch-height", type=int, default=0, help="Skip larger patches when >0. Default keeps all patches.")
@@ -83,6 +85,27 @@ def load_run_config(run_dir: Path, summary: dict[str, Any], checkpoint: dict[str
     if fallback_snapshot.exists():
         return read_json(fallback_snapshot), str(fallback_snapshot)
     return read_json(Path(summary["config_path"])), str(summary["config_path"])
+
+
+def resolve_checkpoint_path(run_dir: Path, summary: dict[str, Any], *, checkpoint_kind: str, checkpoint_path: Path | None) -> Path:
+    if checkpoint_path is not None:
+        return checkpoint_path.expanduser().resolve()
+    outputs = summary.get("outputs", {})
+    if checkpoint_kind == "last":
+        key = "checkpoint_last"
+    else:
+        key = f"checkpoint_{checkpoint_kind}"
+    value = outputs.get(key)
+    if value:
+        return Path(value).expanduser().resolve()
+    if checkpoint_kind != "last":
+        best = summary.get("best_checkpoints", {}).get(checkpoint_kind, {})
+        if best.get("path"):
+            return Path(best["path"]).expanduser().resolve()
+    fallback = outputs.get("checkpoint_last")
+    if fallback:
+        return Path(fallback).expanduser().resolve()
+    return (run_dir / "checkpoints" / "checkpoint_last.pt").resolve()
 
 
 def build_all_scene_patches(
@@ -310,7 +333,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
     summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
-    checkpoint_path = Path(summary["outputs"]["checkpoint_last"]).expanduser().resolve()
+    checkpoint_path = resolve_checkpoint_path(
+        run_dir,
+        summary,
+        checkpoint_kind=str(args.checkpoint_kind),
+        checkpoint_path=args.checkpoint_path,
+    )
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     config, config_source = load_run_config(run_dir, summary, checkpoint)
     device = torch.device(str(args.device))
@@ -356,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
             "split": record.split,
             "scene_key": record.scene_key,
             "config_source": config_source,
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_kind": str(args.checkpoint_kind),
             "png_path": str(png_path),
             **{k: v for k, v in merged["metrics"].items() if k != "skipped_patches"},
             "partition_ph_anchor_count": build_metrics["partition_summary"].get("ph_anchor_count"),

@@ -11,12 +11,13 @@ DNB GeoTIFF brightness + sea mask + PH hierarchy features
 -> per-pixel expected ship-count density heatmap
 ```
 
-The GAT path is retired from active development. Historical GAT notes and logs are kept only for reference.
+The GAT executable code path has been removed from active source. Historical GAT notes and logs remain only in archive/log documents for design-history reference.
 
 ## Current Status
 
 - Active model family: `CountSpatialDensityUNet`.
-- Active config: `configs/dnb_density_unet_count_spatial.json`.
+- Active baseline config: `configs/dnb_density_unet_count_spatial.json`.
+- Active lifetime pilot config: `configs/dnb_density_unet_count_spatial_lifetime.json`.
 - Active target: sum-preserving Gaussian density map from AIS/bbox ground truth.
 - Active partitioning: PH anchors first, fallback grid second, so valid sea pixels are covered.
 - Active PH mode: H0 components from `cripser`, with hierarchical child PH splitting for oversized anchors.
@@ -115,6 +116,8 @@ The current standard pilot training script is:
 
 ```bash
 bash scripts/run_density_count_spatial_scaled_patchmix.sh
+# lifetime-confidence pilot
+bash scripts/run_density_count_spatial_lifetime_patchmix.sh
 ```
 
 Useful overrides:
@@ -151,10 +154,34 @@ PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
   -m sub_module.render_density_enhanced_previews \
   --run-dir outputs/dnb_density/runs/<run_tag> \
   --split test \
+  --checkpoint-kind best_val_loss \
   --device mps
 ```
 
 Preview panels are designed to compare brightness, PH structure, target density, prediction density, explained density overlap, and absolute error.
+
+Full-scene merged prediction:
+
+```bash
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
+  -m sub_module.render_density_full_scene_predictions \
+  --run-dir outputs/dnb_density/runs/<run_tag> \
+  --split test \
+  --checkpoint-kind best_val_loss \
+  --limit-scenes 3 \
+  --device mps
+```
+
+Heuristic baseline evaluation:
+
+```bash
+PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
+  -m sub_module.evaluate_density_baselines \
+  --scene-split-csv outputs/dnb_density/splits/density_smoke_split_10_3_2/scene_split.csv \
+  --config configs/dnb_density_unet_count_spatial.json \
+  --calibration-split train \
+  --eval-split test
+```
 
 ## Core Method Notes
 
@@ -175,6 +202,7 @@ PH is used as a structural prior and partitioning mechanism, not as a hard censo
 - `docs/DNB_DENSITY_MODEL_SCAFFOLD.md`: active U-Net density model design.
 - `docs/PH_HIERARCHY_UNET_HYBRID_DESIGN.md`: PH hierarchy and U-Net integration design.
 - `docs/DNB_DENSITY_OUTPUT_WORKSPACE_20260602.md`: output workspace organization.
+- `docs/DENSITY_PIPELINE_REVIEW_20260608.md`: full pipeline review, quantitative metrics, and performance plan.
 - `docs/experiments/density_count_spatial_good_baseline_20260602.md`: current good qualitative baseline record.
 
 ## Git Workflow

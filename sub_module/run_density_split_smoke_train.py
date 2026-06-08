@@ -433,6 +433,12 @@ def average_dicts(values: list[dict[str, float]]) -> dict[str, float]:
     return {key: float(np.mean([item[key] for item in values if key in item])) for key in keys}
 
 
+def count_ratio_error(metrics: dict[str, Any], eps: float = 1.0e-8) -> float:
+    pred_sum = float(metrics.get("pred_sum") or 0.0)
+    target_sum = float(metrics.get("target_sum") or 0.0)
+    return abs(float(np.log((pred_sum + float(eps)) / (target_sum + float(eps)))))
+
+
 def run_batches(
     *,
     model: torch.nn.Module,
@@ -459,7 +465,12 @@ def run_batches(
     components: list[dict[str, float]] = []
     pred_sum = 0.0
     target_sum = 0.0
+    overlap_sum = 0.0
     patch_count = 0
+    pred_patch_counts: list[float] = []
+    target_patch_counts: list[float] = []
+    spatial_overlaps: list[float] = []
+    eps = 1.0e-8
     if train:
         model.train()
     else:
@@ -485,9 +496,33 @@ def run_batches(
             losses.append(float(loss.detach().cpu()))
             if getattr(loss_fn, "last_components", None):
                 components.append(dict(loss_fn.last_components))
-            pred_sum += float((pred_density.detach() * batch["valid_mask"]).sum().cpu())
-            target_sum += float((batch["target"] * batch["valid_mask"]).sum().cpu())
+            pred_masked = pred_density.detach() * batch["valid_mask"]
+            target_masked = batch["target"] * batch["valid_mask"]
+            pred_sum += float(pred_masked.sum().cpu())
+            target_sum += float(target_masked.sum().cpu())
+            overlap_sum += float(torch.minimum(pred_masked, target_masked).sum().cpu())
+            pred_count_batch = pred_masked.flatten(1).sum(dim=1)
+            target_count_batch = target_masked.flatten(1).sum(dim=1)
+            pred_patch_counts.extend(float(v) for v in pred_count_batch.detach().cpu().tolist())
+            target_patch_counts.extend(float(v) for v in target_count_batch.detach().cpu().tolist())
+            target_positive = target_count_batch > eps
+            if bool(target_positive.any()):
+                pred_prob = pred_masked / torch.clamp(pred_count_batch.reshape(-1, 1, 1, 1), min=eps)
+                target_prob = target_masked / torch.clamp(target_count_batch.reshape(-1, 1, 1, 1), min=eps)
+                spatial_batch = torch.minimum(pred_prob, target_prob).flatten(1).sum(dim=1)
+                spatial_overlaps.extend(float(v) for v in spatial_batch[target_positive].detach().cpu().tolist())
             patch_count += len(batch["metadata"])
+    pred_counts = np.asarray(pred_patch_counts, dtype=np.float64)
+    target_counts = np.asarray(target_patch_counts, dtype=np.float64)
+    count_error = pred_counts - target_counts if pred_counts.size else np.asarray([], dtype=np.float64)
+    positive_mask = target_counts > eps if target_counts.size else np.asarray([], dtype=bool)
+    smape = (
+        2.0 * np.abs(count_error) / np.maximum(np.abs(pred_counts) + np.abs(target_counts), eps)
+        if pred_counts.size
+        else np.asarray([], dtype=np.float64)
+    )
+    target_positive_count = int(positive_mask.sum()) if positive_mask.size else 0
+    pred_target_ratio = float(pred_sum / max(target_sum, eps))
     return {
         "patch_count": int(patch_count),
         "batch_count": int(len(losses)),
@@ -496,6 +531,18 @@ def run_batches(
         "loss_components_mean": average_dicts(components),
         "pred_sum": float(pred_sum),
         "target_sum": float(target_sum),
+        "pred_target_ratio": pred_target_ratio,
+        "count_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
+        "count_bias": float(pred_sum - target_sum),
+        "patch_count_mae": float(np.mean(np.abs(count_error))) if count_error.size else None,
+        "patch_count_rmse": float(np.sqrt(np.mean(count_error**2))) if count_error.size else None,
+        "patch_count_bias_mean": float(np.mean(count_error)) if count_error.size else None,
+        "patch_count_smape": float(np.mean(smape)) if smape.size else None,
+        "positive_patch_count": target_positive_count,
+        "zero_target_patch_count": int((~positive_mask).sum()) if positive_mask.size else 0,
+        "target_explained": float(overlap_sum / max(target_sum, eps)),
+        "pred_matched": float(overlap_sum / max(pred_sum, eps)),
+        "spatial_overlap_mean_positive": float(np.mean(spatial_overlaps)) if spatial_overlaps else None,
     }
 
 
@@ -733,6 +780,9 @@ def main(argv: list[str] | None = None) -> int:
     save_filtered_scene_split(output_dir / "filtered_scene_split.csv", all_scene_results)
 
     train_history: list[dict[str, Any]] = []
+    best_checkpoints: dict[str, dict[str, Any]] = {}
+    best_val_loss = float("inf")
+    best_val_count_ratio_error = float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
             model=model,
@@ -760,6 +810,46 @@ def main(argv: list[str] | None = None) -> int:
         )
         epoch_metrics = {"epoch": int(epoch + 1), "train": train_metrics, "val": val_metrics}
         train_history.append(epoch_metrics)
+        val_loss = val_metrics.get("loss_mean")
+        if bool(args.save_checkpoint) and val_loss is not None and float(val_loss) < best_val_loss:
+            best_val_loss = float(val_loss)
+            checkpoint_path = save_checkpoint(
+                output_dir / "checkpoints" / "checkpoint_best_val_loss.pt",
+                model=model,
+                optimizer=optimizer,
+                config=config,
+                args=args,
+                train_history=train_history,
+                test_metrics={"selection": "best_val_loss", "epoch": int(epoch + 1), "val": val_metrics},
+            )
+            best_checkpoints["best_val_loss"] = {
+                "path": checkpoint_path,
+                "epoch": int(epoch + 1),
+                "val_loss": float(val_loss),
+            }
+        val_count_ratio_error = count_ratio_error(val_metrics)
+        if bool(args.save_checkpoint) and val_count_ratio_error < best_val_count_ratio_error:
+            best_val_count_ratio_error = float(val_count_ratio_error)
+            checkpoint_path = save_checkpoint(
+                output_dir / "checkpoints" / "checkpoint_best_val_count_ratio.pt",
+                model=model,
+                optimizer=optimizer,
+                config=config,
+                args=args,
+                train_history=train_history,
+                test_metrics={
+                    "selection": "best_val_count_ratio",
+                    "epoch": int(epoch + 1),
+                    "val": val_metrics,
+                    "count_ratio_abs_log_error": float(val_count_ratio_error),
+                },
+            )
+            best_checkpoints["best_val_count_ratio"] = {
+                "path": checkpoint_path,
+                "epoch": int(epoch + 1),
+                "count_ratio_abs_log_error": float(val_count_ratio_error),
+                "pred_target_ratio": float(val_metrics.get("pred_target_ratio") or 0.0),
+            }
         print(json.dumps(epoch_metrics, ensure_ascii=False, indent=2))
 
     test_metrics = run_batches(
@@ -825,6 +915,7 @@ def main(argv: list[str] | None = None) -> int:
             "inference_preview_dir": str(output_dir / "inference_previews"),
         },
         "checkpoint_saved": False,
+        "best_checkpoints": best_checkpoints,
     }
     dirty_patch_path = write_dirty_patch(output_dir, summary["git"])
     if dirty_patch_path is not None:
@@ -841,6 +932,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         summary["checkpoint_saved"] = True
         summary["outputs"]["checkpoint_last"] = checkpoint_path
+        for name, info in best_checkpoints.items():
+            summary["outputs"][f"checkpoint_{name}"] = str(info["path"])
     summary_path = output_dir / "run_summary.json"
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"summary_path": str(summary_path), "scene_counts": summary["scene_counts"], "test": test_metrics, "preview_count": len(preview_paths)}, ensure_ascii=False, indent=2))
