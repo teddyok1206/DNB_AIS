@@ -82,6 +82,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--preview-patches", type=int, default=12)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--save-checkpoint", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--init-spatial-checkpoint", type=Path, default=None, help="Optional count-spatial checkpoint to copy encoder/decoder/spatial_head weights from.")
+    parser.add_argument("--freeze-transferred-spatial", action=argparse.BooleanOptionalAction, default=False, help="Freeze transferred encoder/decoder/spatial_head weights after initialization.")
     return parser
 
 
@@ -242,6 +244,101 @@ def build_model_from_config(config: dict[str, Any]) -> torch.nn.Module:
     name = str(model_config.pop("name", "MaskedDensityUNet"))
     model_config.pop("out_channels", None)
     return build_density_model(name, out_channels=1, **model_config)
+
+
+def initialize_spatial_from_checkpoint(
+    model: torch.nn.Module,
+    checkpoint_path: Path,
+    *,
+    freeze_transferred: bool,
+) -> dict[str, Any]:
+    checkpoint_path = checkpoint_path.expanduser().resolve()
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Spatial initialization checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
+        raise ValueError(f"Checkpoint does not contain model_state_dict: {checkpoint_path}")
+    source_state = checkpoint["model_state_dict"]
+    target_state = model.state_dict()
+    copied: list[str] = []
+    partial: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+
+    def source_key_for(target_key: str) -> str | None:
+        if target_key.startswith("encoder."):
+            if target_key in source_state:
+                return target_key
+            dual_key = target_key.replace("encoder.", "spatial_encoder.", 1)
+            if dual_key in source_state:
+                return dual_key
+        if target_key.startswith(("decoder.", "spatial_head.")) and target_key in source_state:
+            return target_key
+        return None
+
+    for target_key, target_tensor in list(target_state.items()):
+        if not target_key.startswith(("encoder.", "decoder.", "spatial_head.")):
+            continue
+        source_key = source_key_for(target_key)
+        if source_key is None:
+            skipped.append({"target_key": target_key, "reason": "missing_source"})
+            continue
+        source_tensor = source_state[source_key]
+        if tuple(source_tensor.shape) == tuple(target_tensor.shape):
+            target_state[target_key] = source_tensor.to(dtype=target_tensor.dtype)
+            copied.append(target_key)
+            continue
+        is_conv_in_channel_extension = (
+            source_tensor.ndim == 4
+            and target_tensor.ndim == 4
+            and source_tensor.shape[0] == target_tensor.shape[0]
+            and source_tensor.shape[2:] == target_tensor.shape[2:]
+            and source_tensor.shape[1] <= target_tensor.shape[1]
+        )
+        if is_conv_in_channel_extension:
+            updated = torch.zeros_like(target_tensor)
+            updated[:, : source_tensor.shape[1], :, :] = source_tensor.to(dtype=target_tensor.dtype)
+            target_state[target_key] = updated
+            partial.append(
+                {
+                    "target_key": target_key,
+                    "source_key": source_key,
+                    "source_shape": list(source_tensor.shape),
+                    "target_shape": list(target_tensor.shape),
+                    "extra_input_channels_zeroed": int(target_tensor.shape[1] - source_tensor.shape[1]),
+                }
+            )
+            continue
+        skipped.append(
+            {
+                "target_key": target_key,
+                "source_key": source_key,
+                "source_shape": list(source_tensor.shape),
+                "target_shape": list(target_tensor.shape),
+                "reason": "shape_mismatch",
+            }
+        )
+
+    model.load_state_dict(target_state, strict=True)
+    frozen: list[str] = []
+    if bool(freeze_transferred):
+        for name, parameter in model.named_parameters():
+            if name.startswith(("encoder.", "decoder.", "spatial_head.")):
+                parameter.requires_grad = False
+                frozen.append(name)
+
+    return {
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_kind": checkpoint.get("kind"),
+        "checkpoint_config_model": checkpoint.get("config", {}).get("model") if isinstance(checkpoint.get("config"), dict) else None,
+        "copied_count": int(len(copied)),
+        "partial_count": int(len(partial)),
+        "skipped_count": int(len(skipped)),
+        "copied_keys": copied,
+        "partial_keys": partial,
+        "skipped_keys": skipped[:50],
+        "freeze_transferred_spatial": bool(freeze_transferred),
+        "frozen_parameter_count": int(len(frozen)),
+    }
 
 
 def select_smoke_patches(
@@ -848,7 +945,16 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[split-smoke] device={device} output_dir={output_dir}")
     print(f"[split-smoke] records train={len(grouped['train'])} val={len(grouped['val'])} test={len(grouped['test'])}")
 
-    model = build_model_from_config(config).to(device)
+    model = build_model_from_config(config)
+    spatial_initialization: dict[str, Any] | None = None
+    if args.init_spatial_checkpoint is not None:
+        spatial_initialization = initialize_spatial_from_checkpoint(
+            model,
+            args.init_spatial_checkpoint,
+            freeze_transferred=bool(args.freeze_transferred_spatial),
+        )
+        print(json.dumps({"spatial_initialization": spatial_initialization}, ensure_ascii=False, indent=2))
+    model = model.to(device)
     loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
     training = config.get("training", {})
     optimizer = torch.optim.AdamW(
@@ -1012,6 +1118,7 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": int(args.batch_size),
         "input_channels": input_channels,
         "grad_clip_norm": float(grad_clip_norm),
+        "spatial_initialization": spatial_initialization,
         "smoke_filters": {
             "skip_ph_anchor_zero": bool(args.skip_ph_anchor_zero),
             "max_patches_per_scene": int(args.max_patches_per_scene),
