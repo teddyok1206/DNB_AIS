@@ -89,6 +89,10 @@ def _channel_array_for_patch(patch: "DensityPatch", channel_name: str) -> np.nda
         return patch.persistence_map
     if normalized in {"ph_soft_attention", "soft_attention"}:
         return patch.soft_attention
+    if normalized in {"anchor_lifetime_map", "ph_anchor_lifetime_map", "lifetime_map"}:
+        return np.full_like(patch.image, max(float(patch.lifetime), 0.0), dtype=np.float32)
+    if normalized in {"anchor_lifetime_valid_map", "ph_anchor_lifetime_valid_map", "lifetime_valid_map"}:
+        return np.asarray(patch.valid_mask, dtype=np.float32) * np.float32(max(float(patch.lifetime), 0.0))
     if normalized in {"loss_weight"}:
         return patch.loss_weight
     if normalized in {"valid_mask", "owner_mask"}:
@@ -568,6 +572,7 @@ def density_patch_collate(
     soft_attention = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     loss_weight = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     valid_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
+    lifetime = torch.zeros((batch_size,), dtype=torch.float32)
 
     metadata: list[dict[str, Any]] = []
     for idx, patch in enumerate(batch):
@@ -581,6 +586,7 @@ def density_patch_collate(
         weight = torch.from_numpy(np.asarray(patch.loss_weight, dtype=np.float32))
         valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
+        lifetime[idx] = float(patch.lifetime)
 
         for channel_idx, channel_name in enumerate(channel_names):
             channel_arr = _channel_array_for_patch(patch, str(channel_name))
@@ -629,6 +635,7 @@ def density_patch_collate(
         "soft_attention": soft_attention,
         "loss_weight": loss_weight,
         "valid_mask": valid_mask,
+        "lifetime": lifetime,
         "metadata": metadata,
     }
 
@@ -647,6 +654,7 @@ def move_density_batch_to_device(batch: dict[str, Any], device: torch.device | s
         "soft_attention",
         "loss_weight",
         "valid_mask",
+        "lifetime",
     ]
     for key in tensor_keys:
         moved[key] = batch[key].to(device)

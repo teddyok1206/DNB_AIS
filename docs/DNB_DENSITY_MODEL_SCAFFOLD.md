@@ -336,7 +336,7 @@ full DNB scene
 -> sea-domain partition that covers the full valid ocean area
 -> each partition becomes a rectangular model crop with padding/halo
 -> U-Net consumes brightness + PH hierarchy channels
--> overlapping predictions are merged back to the full-scene density map
+-> owner pixels are merged back to the full-scene density map
 ```
 
 The partitioning step should use PH results as adaptive anchors, but it must not leave ocean pixels uncovered. This means PH components are region-proposal seeds, not the full partition by themselves. Background ocean between PH components still needs assignment to a partition, for example by bounding-box expansion, Voronoi/watershed-style assignment from PH seeds, or a fixed fallback grid where PH coverage is weak.
@@ -391,6 +391,36 @@ Locked active baseline as of 2026-05-29:
 - Keep exact-cover partitioning as PH-anchor-first plus fallback grid.
 - Keep fallback tile size `96`, halo `16`, anchor padding `16`.
 - Do not change these defaults unless a new full-scene diagnostic improves both coverage and qualitative partition structure.
+
+## Lifetime Use In The Active Pipeline
+
+Do not reintroduce lifetime-weighted overlap averaging as the default full-scene
+merge rule. The active partitioner is an exact-cover owner-mask system:
+
+```text
+each valid sea pixel belongs to exactly one partition owner
+halo pixels are context only
+full-scene merge copies/adds prediction only on owner pixels
+```
+
+Therefore a lifetime-weighted merge would change predicted count mass without a
+clear geometric reason. Use lifetime as a confidence prior instead:
+
+```text
+PH filtering: lifetime and lifetimeFrac decide which H0 components survive
+input feature: anchor_lifetime_map can be added as a constant patch channel
+loss weighting: count/spatial/density terms can be sample-weighted by normalized log1p(lifetime)
+```
+
+The first active lifetime pilot is:
+
+```text
+configs/dnb_density_unet_count_spatial_lifetime.json
+scripts/run_density_count_spatial_lifetime_patchmix.sh
+```
+
+This keeps exact-cover full-scene merging unchanged and tests whether higher
+persistence PH anchors should receive more training emphasis.
 
 ## Archival Baselines
 

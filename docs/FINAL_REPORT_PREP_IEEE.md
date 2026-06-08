@@ -103,7 +103,8 @@ Subsections:
 4.4 Sum-preserving Gaussian density target
 4.5 CountSpatial U-Net architecture
 4.6 Loss function and count-by-integral interpretation
-4.7 Patch inference and full-scene prediction merge
+4.7 PH lifetime confidence prior
+4.8 Patch inference and full-scene prediction merge
 ```
 
 Core equations:
@@ -116,6 +117,8 @@ sum(target_density over owner pixels) = AIS ship count in partition
 density_pred = count_head(x) * softmax(spatial_logits over valid owner pixels)
 
 ship_count(region) = sum(density_pred over region)
+
+lifetime_sample_weight = normalize(1 + alpha * log1p(PH_lifetime) / max_batch_log1p_lifetime)
 ```
 
 ### 5. Experiments

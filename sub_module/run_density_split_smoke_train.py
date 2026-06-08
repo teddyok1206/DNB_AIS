@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import random
 import subprocess
@@ -83,6 +84,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.expanduser().read_text(encoding="utf-8"))
+
+
+def stable_json_hash(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def read_scene_split(path: Path) -> list[SceneSplitRecord]:
@@ -581,6 +587,7 @@ def save_checkpoint(
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "config": config,
+        "config_hash": stable_json_hash(config),
         "args": vars(args),
         "train_history": train_history,
         "test": test_metrics,
@@ -682,6 +689,9 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     config = read_json(args.config)
+    config_hash = stable_json_hash(config)
+    config_snapshot_path = output_dir / "config_snapshot.json"
+    config_snapshot_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     records = read_scene_split(args.scene_split_csv)
     grouped = group_records(records, int(args.max_scenes_per_split))
     device = resolve_required_device(str(args.device))
@@ -779,6 +789,7 @@ def main(argv: list[str] | None = None) -> int:
         "kind": "density_split_smoke_train",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "config_path": str(args.config.expanduser().resolve()),
+        "config_hash": config_hash,
         "scene_split_csv": str(args.scene_split_csv.expanduser().resolve()),
         "device": str(device),
         "seed": int(args.seed),
@@ -808,6 +819,7 @@ def main(argv: list[str] | None = None) -> int:
         "test": test_metrics,
         "preview_paths": preview_paths,
         "outputs": {
+            "config_snapshot": str(config_snapshot_path),
             "scene_metrics_csv": str(output_dir / "scene_metrics.csv"),
             "filtered_scene_split_csv": str(output_dir / "filtered_scene_split.csv"),
             "inference_preview_dir": str(output_dir / "inference_previews"),

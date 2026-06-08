@@ -447,6 +447,11 @@ class CountSpatialLossConfig:
     huber_delta: float = 0.05
     background_target_threshold: float = 1.0e-6
     min_target_count_for_spatial: float = 1.0e-6
+    lifetime_weight_mode: str = "none"
+    lifetime_weight_strength: float = 0.0
+    lifetime_weight_min: float = 0.25
+    lifetime_weight_max: float = 2.0
+    lifetime_weight_normalize: bool = True
     eps: float = 1.0e-8
     report_components: bool = True
 
@@ -476,6 +481,44 @@ def _spatial_prob_from_logits(
     exp_logits = torch.exp(flat_logits - max_logits) * flat_valid
     denom = torch.clamp(exp_logits.sum(dim=1, keepdim=True), min=float(eps))
     return (exp_logits / denom).reshape_as(spatial_logits)
+
+
+def _weighted_sample_mean(values: torch.Tensor, sample_weight: torch.Tensor, eps: float) -> torch.Tensor:
+    weight = sample_weight.reshape(values.shape[0], *([1] * (values.ndim - 1))).to(dtype=values.dtype, device=values.device)
+    return (values * weight).sum() / torch.clamp(weight.expand_as(values).sum(), min=float(eps))
+
+
+def _lifetime_sample_weight(
+    batch: dict[str, Any],
+    *,
+    mode: str,
+    strength: float,
+    min_weight: float,
+    max_weight: float,
+    normalize: bool,
+    eps: float,
+    reference: torch.Tensor,
+) -> torch.Tensor:
+    batch_size = int(reference.shape[0])
+    mode = str(mode).lower()
+    if mode in {"none", "off", "false", "0"} or float(strength) <= 0.0 or "lifetime" not in batch:
+        return reference.new_ones((batch_size,), dtype=reference.dtype)
+    lifetime = torch.clamp(batch["lifetime"].to(device=reference.device, dtype=reference.dtype).reshape(-1), min=0.0)
+    if mode in {"linear", "lifetime"}:
+        signal = lifetime
+    elif mode in {"log", "log1p", "log_lifetime", "log1p_batch"}:
+        signal = torch.log1p(lifetime)
+    elif mode in {"sqrt", "sqrt_lifetime"}:
+        signal = torch.sqrt(lifetime)
+    else:
+        raise ValueError(f"Unsupported lifetime_weight_mode: {mode}")
+    max_signal = torch.clamp(signal.max().detach(), min=float(eps))
+    scaled = signal / max_signal
+    weight = 1.0 + float(strength) * scaled
+    weight = torch.clamp(weight, min=float(min_weight), max=float(max_weight))
+    if bool(normalize):
+        weight = weight / torch.clamp(weight.mean().detach(), min=float(eps))
+    return weight
 
 
 def density_from_model_output(
@@ -523,6 +566,17 @@ class CountSpatialDensityLoss(nn.Module):
         target = batch["target"]
         valid_mask = batch["valid_mask"]
         cfg = self.config
+        sample_weight = _lifetime_sample_weight(
+            batch,
+            mode=cfg.lifetime_weight_mode,
+            strength=float(cfg.lifetime_weight_strength),
+            min_weight=float(cfg.lifetime_weight_min),
+            max_weight=float(cfg.lifetime_weight_max),
+            normalize=bool(cfg.lifetime_weight_normalize),
+            eps=float(cfg.eps),
+            reference=target,
+        )
+        sample_weight_map = sample_weight.reshape(-1, 1, 1, 1)
 
         pred_density = self.density_from_output(output, batch)
         pred_prob = _spatial_prob_from_logits(
@@ -535,7 +589,7 @@ class CountSpatialDensityLoss(nn.Module):
         target_count = target_mass.flatten(1).sum(dim=1)
         pred_count = output["count"].reshape(-1)
 
-        count = _count_error_loss(
+        count_element = _count_error_element(
             pred_count,
             target_count,
             loss_name=cfg.count_loss,
@@ -543,6 +597,7 @@ class CountSpatialDensityLoss(nn.Module):
             normalizer=1.0,
             eps=float(cfg.eps),
         )
+        count = _weighted_sample_mean(count_element, sample_weight, float(cfg.eps))
 
         target_prob = target_mass / torch.clamp(target_count.reshape(-1, 1, 1, 1), min=float(cfg.eps))
         positive = (target_count > float(cfg.min_target_count_for_spatial)).to(dtype=target.dtype).reshape(-1, 1, 1, 1)
@@ -555,12 +610,13 @@ class CountSpatialDensityLoss(nn.Module):
             raise ValueError(f"Unsupported spatial loss: {cfg.spatial_loss}")
         spatial_per_sample = spatial_element.flatten(1).sum(dim=1)
         positive_flat = positive.reshape(-1)
-        spatial = (spatial_per_sample * positive_flat).sum() / torch.clamp(positive_flat.sum(), min=1.0)
+        spatial_weight = positive_flat * sample_weight
+        spatial = (spatial_per_sample * spatial_weight).sum() / torch.clamp(spatial_weight.sum(), min=1.0)
 
         density = weighted_density_loss(
             pred_density,
             target,
-            valid_mask,
+            valid_mask * sample_weight_map,
             loss_name=cfg.density_loss,
             huber_delta=float(cfg.huber_delta),
             eps=float(cfg.eps),
@@ -568,7 +624,7 @@ class CountSpatialDensityLoss(nn.Module):
         background = background_suppression_loss(
             pred_density,
             target,
-            valid_mask,
+            valid_mask * sample_weight_map,
             target_threshold=float(cfg.background_target_threshold),
             eps=float(cfg.eps),
         )
@@ -589,6 +645,10 @@ class CountSpatialDensityLoss(nn.Module):
                 "loss_weight_spatial": float(cfg.spatial_weight),
                 "loss_weight_density": float(cfg.density_weight),
                 "loss_weight_background": float(cfg.background_weight),
+                "lifetime_weight_mode": 0.0 if str(cfg.lifetime_weight_mode).lower() in {"none", "off", "false", "0"} else 1.0,
+                "lifetime_weight_strength": float(cfg.lifetime_weight_strength),
+                "lifetime_weight_mean": float(sample_weight.detach().mean().cpu()),
+                "lifetime_weight_max": float(sample_weight.detach().max().cpu()),
                 "pred_count_mean": float(pred_count.detach().mean().cpu()),
                 "target_count_mean": float(target_count.detach().mean().cpu()),
             }

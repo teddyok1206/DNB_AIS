@@ -71,6 +71,20 @@ def read_records(path: Path, *, split: str, scene_key: str | None, limit: int) -
     return records
 
 
+def load_run_config(run_dir: Path, summary: dict[str, Any], checkpoint: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    if isinstance(checkpoint.get("config"), dict):
+        return dict(checkpoint["config"]), "checkpoint.config"
+    snapshot = summary.get("outputs", {}).get("config_snapshot")
+    if snapshot:
+        snapshot_path = Path(snapshot).expanduser()
+        if snapshot_path.exists():
+            return read_json(snapshot_path), str(snapshot_path)
+    fallback_snapshot = run_dir / "config_snapshot.json"
+    if fallback_snapshot.exists():
+        return read_json(fallback_snapshot), str(fallback_snapshot)
+    return read_json(Path(summary["config_path"])), str(summary["config_path"])
+
+
 def build_all_scene_patches(
     record: SceneSplitRecord,
     *,
@@ -296,9 +310,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
     summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
-    config = read_json(Path(summary["config_path"]))
     checkpoint_path = Path(summary["outputs"]["checkpoint_last"]).expanduser().resolve()
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config, config_source = load_run_config(run_dir, summary, checkpoint)
     device = torch.device(str(args.device))
     model = build_model_from_checkpoint(config, checkpoint, device)
     input_channels = input_channels_from_config(config)
@@ -341,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         metrics = {
             "split": record.split,
             "scene_key": record.scene_key,
+            "config_source": config_source,
             "png_path": str(png_path),
             **{k: v for k, v in merged["metrics"].items() if k != "skipped_patches"},
             "partition_ph_anchor_count": build_metrics["partition_summary"].get("ph_anchor_count"),

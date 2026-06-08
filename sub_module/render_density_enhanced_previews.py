@@ -77,6 +77,20 @@ def build_model_from_checkpoint(config: dict[str, Any], checkpoint: dict[str, An
     return model
 
 
+def load_run_config(run_dir: Path, summary: dict[str, Any], checkpoint: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    if isinstance(checkpoint.get("config"), dict):
+        return dict(checkpoint["config"]), "checkpoint.config"
+    snapshot = summary.get("outputs", {}).get("config_snapshot")
+    if snapshot:
+        snapshot_path = Path(snapshot).expanduser()
+        if snapshot_path.exists():
+            return read_json(snapshot_path), str(snapshot_path)
+    fallback_snapshot = run_dir / "config_snapshot.json"
+    if fallback_snapshot.exists():
+        return read_json(fallback_snapshot), str(fallback_snapshot)
+    return read_json(Path(summary["config_path"])), str(summary["config_path"])
+
+
 def robust_max(arrays: list[np.ndarray], eps: float = 1.0e-8) -> float:
     values = [float(np.nanpercentile(np.asarray(arr, dtype=np.float32), 99.5)) for arr in arrays if np.asarray(arr).size]
     return max(max(values) if values else 1.0, eps)
@@ -170,9 +184,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
     summary = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
-    config = read_json(Path(summary["config_path"]))
     checkpoint_path = Path(summary["outputs"]["checkpoint_last"])
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config, config_source = load_run_config(run_dir, summary, checkpoint)
     device = torch.device(args.device)
     model = build_model_from_checkpoint(config, checkpoint, device)
 
@@ -220,13 +234,14 @@ def main(argv: list[str] | None = None) -> int:
                     "path": str(out_path),
                     "partition_kind": str(meta["partition_kind"]),
                     "partition_id": meta.get("partition_id"),
+                    "config_source": config_source,
                     **metrics,
                 }
             )
 
     metrics_path = output_dir / "enhanced_preview_metrics.csv"
     with metrics_path.open("w", newline="", encoding="utf-8") as handle:
-        fieldnames = ["index", "path", "partition_kind", "partition_id", "pred_sum", "target_sum", "target_explained", "pred_matched", "spatial_overlap"]
+        fieldnames = ["index", "path", "partition_kind", "partition_id", "config_source", "pred_sum", "target_sum", "target_explained", "pred_matched", "spatial_overlap"]
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
