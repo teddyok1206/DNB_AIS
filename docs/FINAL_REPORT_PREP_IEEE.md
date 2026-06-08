@@ -218,6 +218,22 @@ outputs/dnb_density/baselines/<run_tag>/brightness_threshold_scene_build_metrics
 outputs/dnb_density/baselines/<run_tag>/brightness_threshold_summary.json
 ```
 
+For repeated threshold-only sweeps, cache the selected patches on SSD first:
+
+```sh
+SCENE_SPLIT_CSV=outputs/dnb_density/splits/<run_tag>/scene_split.csv \
+CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/<cache_tag> \
+bash scripts/build_brightness_threshold_patch_cache.sh
+```
+
+Then sweep thresholds without rebuilding PH anchors or patches:
+
+```sh
+CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/<cache_tag> \
+THRESHOLDS='0.25,0.275,0.30,0.325,0.35,0.375,0.40,0.425,0.45,0.475,0.50,0.525,0.55' \
+bash scripts/sweep_brightness_threshold_patch_cache.sh
+```
+
 ### 6. Results
 
 Primary metrics:

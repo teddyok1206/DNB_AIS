@@ -41,6 +41,35 @@ Baseline threshold candidates:
 
 The high thresholds `0.85, 0.90, 0.95` are retained for interpretability, but the sweep includes lower thresholds because current arctan-encoded GeoTIFF brightness often peaks below `0.85`.
 
+Reusable SSD patch cache:
+
+```text
+/Volumes/SAMSUNG/dnb_density_patch_cache/ox_spatial_25pct_valtest_20260609_0305
+```
+
+The cache stores the selected validation/test patches after PH anchor extraction, sea masking, partitioning, and O/X patch sampling. It avoids rebuilding PH/patches when only brightness thresholds change.
+
+Cached split files:
+
+```text
+val_patch_cache.npz: 1,222 patches
+test_patch_cache.npz: 1,017 patches
+```
+
+Reusable commands:
+
+```sh
+SCENE_SPLIT_CSV=outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv \
+CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/ox_spatial_25pct_valtest_20260609_0305 \
+bash scripts/build_brightness_threshold_patch_cache.sh
+```
+
+```sh
+CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/ox_spatial_25pct_valtest_20260609_0305 \
+THRESHOLDS='0.25,0.275,0.30,0.325,0.35,0.375,0.40,0.425,0.45,0.475,0.50,0.525,0.55' \
+bash scripts/sweep_brightness_threshold_patch_cache.sh
+```
+
 ## Patch Counts
 
 | split | kept patches | positive patches | negative patches |
@@ -78,6 +107,34 @@ The table compares the validation-selected brightness threshold baseline against
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | brightness threshold | 0.35 | 0.4656 | 0.7342 | 0.5698 | 0.4671 | 0.5329 | 359 | 412 | 130 | 116 | 1.5767 | 0.0507 |
 | PH-assisted OccupancySpatial U-Net | n/a | 0.6298 | 0.7342 | 0.6780 | 0.6647 | 0.2178 | 359 | 211 | 130 | 317 | 1.0097 | 0.0884 |
+
+## Fine Threshold Sweep
+
+After building the reusable SSD cache, a finer threshold sweep was run around the coarse optimum:
+
+```text
+0.25, 0.275, 0.30, 0.325, 0.35, 0.375, 0.40, 0.425, 0.45, 0.475, 0.50, 0.525, 0.55
+```
+
+Validation-selected fine threshold:
+
+```text
+threshold=0.325, val F1=0.5994
+```
+
+Corresponding held-out test result:
+
+```text
+threshold=0.325, test F1=0.5665, precision=0.4588, recall=0.7403
+```
+
+Best test threshold inside the fine sweep, reported only as a diagnostic and not as the validation-selected baseline:
+
+```text
+threshold=0.35, test F1=0.5698
+```
+
+Conclusion: small threshold adjustments do not close the gap to the PH-assisted U-Net. The brightness-only baseline remains around `test F1 ~= 0.57`, while the active model reaches `test F1 = 0.6780`.
 
 ## Interpretation
 
