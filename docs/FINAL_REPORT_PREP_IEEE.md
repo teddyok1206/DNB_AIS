@@ -177,6 +177,46 @@ split policy: day-level split to avoid same-day leakage
 checkpoint policy: last, best validation loss, best validation occupancy F1, best validation occupancy mass ratio
 ```
 
+Baseline comparison protocol:
+
+```text
+Do not call the comparison model a legacy method unless a true historical implementation is being reproduced.
+Use the name "rule-based brightness threshold baseline".
+
+Baseline rule:
+  pred_positive_patch = any(encoded_brightness >= threshold over valid owner pixels)
+  pred_spatial_map = normalize(binary_threshold_mask over valid owner pixels)
+
+Threshold candidates:
+  0.85, 0.90, 0.95 over arctan-encoded DNB brightness
+
+Selection:
+  evaluate all threshold candidates on validation
+  select the threshold with best validation occupancy_f1
+  break ties by spatial_overlap_mean_positive, target_explained, then lower occupancy_brier
+  report the selected threshold on test without retuning
+
+Fairness constraint:
+  use the exact same scene_split.csv and patch-selection settings as the active U-Net run
+```
+
+Runnable baseline command:
+
+```sh
+SCENE_SPLIT_CSV=outputs/dnb_density/splits/<run_tag>/scene_split.csv \
+RUN_TAG=brightness_threshold_<run_tag> \
+bash scripts/run_brightness_threshold_baseline.sh
+```
+
+Outputs:
+
+```text
+outputs/dnb_density/baselines/<run_tag>/brightness_threshold_metrics_by_split.csv
+outputs/dnb_density/baselines/<run_tag>/brightness_threshold_selected_threshold_metrics.csv
+outputs/dnb_density/baselines/<run_tag>/brightness_threshold_scene_build_metrics.csv
+outputs/dnb_density/baselines/<run_tag>/brightness_threshold_summary.json
+```
+
 ### 6. Results
 
 Primary metrics:
@@ -213,6 +253,28 @@ Figure 5: patch-level target/prediction/error preview
 Figure 6: full-scene merged occupancy evidence heatmap
 Figure 7: train/validation loss, occupancy F1, and spatial-overlap curves
 Figure 8: selected qualitative success/failure cases
+```
+
+Required comparison table:
+
+```text
+Table IV: rule-based brightness threshold baseline vs PH-assisted OccupancySpatial U-Net
+
+Rows:
+  brightness >= 0.85
+  brightness >= 0.90
+  brightness >= 0.95
+  best brightness threshold selected on validation
+  PH-assisted OccupancySpatial U-Net
+
+Columns:
+  occupancy_precision
+  occupancy_recall
+  occupancy_f1
+  occupancy_brier
+  spatial_overlap_mean_positive
+  target_explained
+  pred_matched
 ```
 
 ### 7. Discussion
