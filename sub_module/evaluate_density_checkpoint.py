@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,15 +15,22 @@ from .dnb_density_common import density_patch_collate, move_density_batch_to_dev
 from .dnb_density_losses import build_density_loss
 from .dnb_density_patch_pickle_cache import load_patch_split_cache
 from .run_density_split_smoke_train import (
+    build_arg_parser as build_train_arg_parser,
+    build_scene,
     build_model_from_config,
+    group_records,
     input_channels_from_config,
     loss_config_from_config,
     make_loader,
+    read_scene_split,
     read_json,
     resolve_required_device,
     run_batches,
+    seed_everything,
     stable_json_hash,
 )
+from .dnb_pipeline_core import GroundTruthResolver
+from .dnb_project_paths import ROOT, STEP3
 
 
 CHECKPOINT_SELECTIONS = {
@@ -94,6 +102,60 @@ def patch_cache_dir_from_summary(summary: dict[str, Any]) -> Path:
     if not raw_dir:
         raise KeyError("run_summary.json does not record patch_cache.dir")
     return Path(str(raw_dir)).expanduser().resolve()
+
+
+def train_args_from_command(run_dir: Path) -> argparse.Namespace:
+    command_path = run_dir / "command.txt"
+    if not command_path.exists():
+        raise FileNotFoundError(f"No patch cache is recorded and command.txt is missing: {command_path}")
+    command_text = command_path.read_text(encoding="utf-8").replace("\\\n", " ")
+    tokens = shlex.split(command_text)
+    module = "sub_module.run_density_split_smoke_train"
+    if module not in tokens:
+        raise ValueError(f"command.txt does not invoke {module}: {command_path}")
+    argv = tokens[tokens.index(module) + 1 :]
+    return build_train_arg_parser().parse_args(argv)
+
+
+def resolve_repo_relative(path: Path) -> Path:
+    path = path.expanduser()
+    return path.resolve() if path.is_absolute() else (ROOT / path).resolve()
+
+
+def rebuild_split_patches_from_run(run_dir: Path, config: dict[str, Any], split: str) -> tuple[list[Any], dict[str, Any]]:
+    train_args = train_args_from_command(run_dir)
+    train_args.scene_split_csv = resolve_repo_relative(train_args.scene_split_csv)
+    seed_everything(int(train_args.seed))
+    records = read_scene_split(train_args.scene_split_csv)
+    grouped = group_records(records, int(train_args.max_scenes_per_split))
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
+    patches: list[Any] = []
+    kept_scene_count = 0
+    skipped: list[dict[str, str]] = []
+    for record in grouped[str(split)]:
+        print(f"[patch-rebuild] {split} {record.scene_key}")
+        try:
+            result = build_scene(record, config=config, args=train_args, resolver=resolver)
+        except Exception as exc:
+            skipped.append({"scene_key": record.scene_key, "reason": f"exception:{type(exc).__name__}:{exc}"})
+            continue
+        if result.excluded_reason:
+            skipped.append({"scene_key": record.scene_key, "reason": str(result.excluded_reason)})
+            continue
+        kept_scene_count += 1
+        patches.extend(result.patches)
+    metadata = {
+        "schema_version": None,
+        "kind": "rebuilt_density_patch_split",
+        "source": str(run_dir / "command.txt"),
+        "cache": "none",
+        "split": str(split),
+        "input_scene_count": int(len(grouped[str(split)])),
+        "kept_scene_count": int(kept_scene_count),
+        "patch_count": int(len(patches)),
+        "skipped": skipped,
+    }
+    return patches, metadata
 
 
 def load_model_and_loss(checkpoint_path: Path, config: dict[str, Any], device: torch.device) -> tuple[torch.nn.Module, torch.nn.Module, dict[str, Any]]:
@@ -464,14 +526,28 @@ def main(argv: list[str] | None = None) -> int:
         raise FileNotFoundError(f"Missing config_snapshot.json and run_summary.json in {run_dir}")
     device = resolve_required_device(str(args.device))
     model, loss_fn, config = load_model_and_loss(checkpoint_path, config, device)
+    patch_source = "cache"
+    cache_dir: Path | None = None
     if args.patch_cache_dir is not None:
         cache_dir = args.patch_cache_dir.expanduser().resolve()
     elif summary:
-        cache_dir = patch_cache_dir_from_summary(summary)
+        try:
+            cache_dir = patch_cache_dir_from_summary(summary)
+        except KeyError:
+            cache_dir = None
+    if cache_dir is not None:
+        eval_patches, eval_cache_metadata = load_patch_split_cache(cache_dir, str(args.split))
+        calibration_patches, calibration_cache_metadata = load_patch_split_cache(cache_dir, str(args.calibration_split))
+    elif summary:
+        patch_source = "rebuilt_no_cache"
+        eval_patches, eval_cache_metadata = rebuild_split_patches_from_run(run_dir, config, str(args.split))
+        calibration_patches, calibration_cache_metadata = rebuild_split_patches_from_run(
+            run_dir,
+            config,
+            str(args.calibration_split),
+        )
     else:
         raise KeyError("Interrupted runs without run_summary.json require --patch-cache-dir.")
-    eval_patches, eval_cache_metadata = load_patch_split_cache(cache_dir, str(args.split))
-    calibration_patches, calibration_cache_metadata = load_patch_split_cache(cache_dir, str(args.calibration_split))
     batch_size = int(args.batch_size if args.batch_size is not None else summary.get("batch_size", 4))
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
     input_channels = input_channels_from_config(config)
@@ -580,7 +656,8 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": batch_size,
         "split": str(args.split),
         "calibration_split": str(args.calibration_split),
-        "patch_cache_dir": str(cache_dir),
+        "patch_source": patch_source,
+        "patch_cache_dir": None if cache_dir is None else str(cache_dir),
         "patch_cache_metadata": {
             str(args.split): {key: value for key, value in eval_cache_metadata.items() if key != "patches"},
             str(args.calibration_split): {key: value for key, value in calibration_cache_metadata.items() if key != "patches"},
