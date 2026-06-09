@@ -27,11 +27,7 @@ from .run_density_split_smoke_train import (
 CHECKPOINT_SELECTIONS = {
     "last": ("outputs", "checkpoint_last"),
     "best_val_loss": ("best_checkpoints", "best_val_loss"),
-    "best_val_occupancy_mass_ratio": ("best_checkpoints", "best_val_occupancy_mass_ratio"),
-    "best_val_count_ratio": ("best_checkpoints", "best_val_count_ratio"),
-    "best_val_occupancy_f1": ("best_checkpoints", "best_val_occupancy_f1"),
     "best_val_pixel_f1": ("best_checkpoints", "best_val_pixel_f1"),
-    "best_val_spatial_overlap": ("best_checkpoints", "best_val_spatial_overlap"),
 }
 
 
@@ -41,7 +37,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint",
         choices=sorted(CHECKPOINT_SELECTIONS),
-        default="best_val_occupancy_f1",
+        default="best_val_pixel_f1",
         help="Checkpoint selection from run_summary.json.",
     )
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint path. Overrides --checkpoint.")

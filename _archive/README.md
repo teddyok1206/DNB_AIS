@@ -6,5 +6,6 @@ This directory stores lightweight archive metadata only. Heavy legacy archives a
 
 - Keep active pipeline code in `configs/`, `sub_module/`, `scripts/`, and `[3]_DNB_AIS - (STEP 3)/` until path aliases are introduced.
 - Keep inventory, checksums, and restore notes in `_archive/manifests/`.
+- Keep lightweight retired density pipeline pieces in `_archive/retired_density_complexity_20260609/`.
 - Store heavy legacy archives outside git. Default external target: `/Volumes/SAMSUNG/DNB_AIS_archive/legacy_steps`.
 - Do not delete legacy source folders until archive checksums and restore listings have been verified.

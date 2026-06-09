@@ -66,9 +66,9 @@ class SceneBuildResult:
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run split-level PH-assisted occupancy/spatial U-Net training.")
-    parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "density_smoke_split_10_3_2" / "scene_split.csv")
-    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_occupancy_spatial.json")
+    parser = argparse.ArgumentParser(description="Run split-level PH-assisted pixel-binary U-Net training.")
+    parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "ox_spatial_25pct_63_15_14_20260609_011421" / "scene_split.csv")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json")
     parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "runs" / "density_split_smoke_train")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=20260529)
@@ -95,8 +95,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=False,
         help="Build/load split patch caches and write cache metadata, then exit before model training/evaluation.",
     )
-    parser.add_argument("--init-spatial-checkpoint", type=Path, default=None, help="Optional count-spatial checkpoint to copy encoder/decoder/spatial_head weights from.")
-    parser.add_argument("--freeze-transferred-spatial", action=argparse.BooleanOptionalAction, default=False, help="Freeze transferred encoder/decoder/spatial_head weights after initialization.")
     parser.add_argument("--patch-cache-dir", type=Path, default=None, help="Optional directory for reusable full DensityPatch caches.")
     parser.add_argument(
         "--patch-cache-mode",
@@ -267,104 +265,9 @@ def input_channels_from_config(config: dict[str, Any]) -> list[str] | None:
 
 def build_model_from_config(config: dict[str, Any]) -> torch.nn.Module:
     model_config = dict(config.get("model", {}))
-    name = str(model_config.pop("name", "MaskedDensityUNet"))
+    name = str(model_config.pop("name", "PixelBinaryOccupancyUNet"))
     model_config.pop("out_channels", None)
     return build_density_model(name, out_channels=1, **model_config)
-
-
-def initialize_spatial_from_checkpoint(
-    model: torch.nn.Module,
-    checkpoint_path: Path,
-    *,
-    freeze_transferred: bool,
-) -> dict[str, Any]:
-    checkpoint_path = checkpoint_path.expanduser().resolve()
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Spatial initialization checkpoint not found: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-    if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
-        raise ValueError(f"Checkpoint does not contain model_state_dict: {checkpoint_path}")
-    source_state = checkpoint["model_state_dict"]
-    target_state = model.state_dict()
-    copied: list[str] = []
-    partial: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-
-    def source_key_for(target_key: str) -> str | None:
-        if target_key.startswith("encoder."):
-            if target_key in source_state:
-                return target_key
-            dual_key = target_key.replace("encoder.", "spatial_encoder.", 1)
-            if dual_key in source_state:
-                return dual_key
-        if target_key.startswith(("decoder.", "spatial_head.")) and target_key in source_state:
-            return target_key
-        return None
-
-    for target_key, target_tensor in list(target_state.items()):
-        if not target_key.startswith(("encoder.", "decoder.", "spatial_head.")):
-            continue
-        source_key = source_key_for(target_key)
-        if source_key is None:
-            skipped.append({"target_key": target_key, "reason": "missing_source"})
-            continue
-        source_tensor = source_state[source_key]
-        if tuple(source_tensor.shape) == tuple(target_tensor.shape):
-            target_state[target_key] = source_tensor.to(dtype=target_tensor.dtype)
-            copied.append(target_key)
-            continue
-        is_conv_in_channel_extension = (
-            source_tensor.ndim == 4
-            and target_tensor.ndim == 4
-            and source_tensor.shape[0] == target_tensor.shape[0]
-            and source_tensor.shape[2:] == target_tensor.shape[2:]
-            and source_tensor.shape[1] <= target_tensor.shape[1]
-        )
-        if is_conv_in_channel_extension:
-            updated = torch.zeros_like(target_tensor)
-            updated[:, : source_tensor.shape[1], :, :] = source_tensor.to(dtype=target_tensor.dtype)
-            target_state[target_key] = updated
-            partial.append(
-                {
-                    "target_key": target_key,
-                    "source_key": source_key,
-                    "source_shape": list(source_tensor.shape),
-                    "target_shape": list(target_tensor.shape),
-                    "extra_input_channels_zeroed": int(target_tensor.shape[1] - source_tensor.shape[1]),
-                }
-            )
-            continue
-        skipped.append(
-            {
-                "target_key": target_key,
-                "source_key": source_key,
-                "source_shape": list(source_tensor.shape),
-                "target_shape": list(target_tensor.shape),
-                "reason": "shape_mismatch",
-            }
-        )
-
-    model.load_state_dict(target_state, strict=True)
-    frozen: list[str] = []
-    if bool(freeze_transferred):
-        for name, parameter in model.named_parameters():
-            if name.startswith(("encoder.", "decoder.", "spatial_head.")):
-                parameter.requires_grad = False
-                frozen.append(name)
-
-    return {
-        "checkpoint_path": str(checkpoint_path),
-        "checkpoint_kind": checkpoint.get("kind"),
-        "checkpoint_config_model": checkpoint.get("config", {}).get("model") if isinstance(checkpoint.get("config"), dict) else None,
-        "copied_count": int(len(copied)),
-        "partial_count": int(len(partial)),
-        "skipped_count": int(len(skipped)),
-        "copied_keys": copied,
-        "partial_keys": partial,
-        "skipped_keys": skipped[:50],
-        "freeze_transferred_spatial": bool(freeze_transferred),
-        "frozen_parameter_count": int(len(frozen)),
-    }
 
 
 def select_smoke_patches(
@@ -555,34 +458,12 @@ def build_scene(
 
 def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
     if torch.is_tensor(output):
-        return output
+        return torch.sigmoid(output) * batch["valid_mask"]
     if "density" in output:
-        return output["density"]
+        return output["density"] * batch["valid_mask"]
     if "pixel_logits" in output:
         return torch.sigmoid(output["pixel_logits"]) * batch["valid_mask"]
-    if "spatial_logits" not in output and ("occupancy_logit" in output or "occupancy_logits" in output):
-        valid_mask = (batch["valid_mask"] > 0).to(dtype=batch["valid_mask"].dtype)
-        valid_count = torch.clamp(valid_mask.flatten(1).sum(dim=1).reshape(-1, 1, 1, 1), min=1.0e-8)
-        logit = output["occupancy_logit"] if "occupancy_logit" in output else output["occupancy_logits"]
-        return valid_mask * torch.sigmoid(logit.reshape(-1, 1, 1, 1)) / valid_count
-    if "spatial_logits" not in output:
-        raise ValueError("Model output dict must contain density or spatial_logits")
-    valid_mask = batch["valid_mask"]
-    logits = torch.where(valid_mask > 0, output["spatial_logits"], torch.full_like(output["spatial_logits"], -1.0e9))
-    flat_logits = logits.flatten(1)
-    flat_valid = (valid_mask > 0).flatten(1).to(dtype=logits.dtype)
-    max_logits = flat_logits.max(dim=1, keepdim=True).values
-    exp_logits = torch.exp(flat_logits - max_logits) * flat_valid
-    prob = (exp_logits / torch.clamp(exp_logits.sum(dim=1, keepdim=True), min=1.0e-8)).reshape_as(logits)
-    if "count" in output:
-        return prob * output["count"].reshape(-1, 1, 1, 1)
-    if "occupancy_logit" in output:
-        return prob * torch.sigmoid(output["occupancy_logit"].reshape(-1, 1, 1, 1))
-    if "occupancy_logits" in output:
-        return prob * torch.sigmoid(output["occupancy_logits"].reshape(-1, 1, 1, 1))
-    if "spatial_logits" in output:
-        return prob
-    raise ValueError("Model output dict must contain count or occupancy_logit")
+    raise ValueError("Current density runner expects pixel_logits or density output")
 
 
 def target_density_for_metrics(loss_fn: torch.nn.Module, batch: dict[str, Any]) -> torch.Tensor:
@@ -617,12 +498,6 @@ def average_dicts(values: list[dict[str, float]]) -> dict[str, float]:
         return {}
     keys = sorted({key for item in values for key in item})
     return {key: float(np.mean([item[key] for item in values if key in item])) for key in keys}
-
-
-def mass_ratio_error(metrics: dict[str, Any], eps: float = 1.0e-8) -> float:
-    pred_sum = float(metrics.get("pred_sum") or 0.0)
-    target_sum = float(metrics.get("target_sum") or 0.0)
-    return abs(float(np.log((pred_sum + float(eps)) / (target_sum + float(eps)))))
 
 
 def run_batches(
@@ -1062,17 +937,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[split-smoke] records train={len(grouped['train'])} val={len(grouped['val'])} test={len(grouped['test'])}")
 
     model = build_model_from_config(config)
-    spatial_initialization: dict[str, Any] | None = None
-    if args.init_spatial_checkpoint is not None:
-        spatial_initialization = initialize_spatial_from_checkpoint(
-            model,
-            args.init_spatial_checkpoint,
-            freeze_transferred=bool(args.freeze_transferred_spatial),
-        )
-        print(json.dumps({"spatial_initialization": spatial_initialization}, ensure_ascii=False, indent=2))
     model = model.to(device)
     loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
-    uses_occupancy_loss = hasattr(loss_fn, "occupancy_from_output")
     training = config.get("training", {})
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -1213,10 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
     train_history: list[dict[str, Any]] = []
     best_checkpoints: dict[str, dict[str, Any]] = {}
     best_val_loss = float("inf")
-    best_val_mass_ratio_error = float("inf")
-    best_val_occupancy_f1 = -float("inf")
     best_val_pixel_f1 = -float("inf")
-    best_val_spatial_overlap = -float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
             model=model,
@@ -1261,53 +1124,6 @@ def main(argv: list[str] | None = None) -> int:
                 "epoch": int(epoch + 1),
                 "val_loss": float(val_loss),
             }
-        val_mass_ratio_error = mass_ratio_error(val_metrics)
-        if bool(args.save_checkpoint) and val_mass_ratio_error < best_val_mass_ratio_error:
-            best_val_mass_ratio_error = float(val_mass_ratio_error)
-            mass_selection = "best_val_occupancy_mass_ratio" if uses_occupancy_loss else "best_val_count_ratio"
-            mass_metric = "occupancy_mass_ratio_abs_log_error" if uses_occupancy_loss else "count_ratio_abs_log_error"
-            checkpoint_path = save_checkpoint(
-                output_dir / "checkpoints" / f"checkpoint_{mass_selection}.pt",
-                model=model,
-                optimizer=optimizer,
-                config=config,
-                args=args,
-                train_history=train_history,
-                test_metrics={
-                    "selection": mass_selection,
-                    "epoch": int(epoch + 1),
-                    "val": val_metrics,
-                    mass_metric: float(val_mass_ratio_error),
-                },
-            )
-            best_checkpoints[mass_selection] = {
-                "path": checkpoint_path,
-                "epoch": int(epoch + 1),
-                mass_metric: float(val_mass_ratio_error),
-                "pred_target_ratio": float(val_metrics.get("pred_target_ratio") or 0.0),
-            }
-        val_occupancy_f1 = val_metrics.get("occupancy_f1")
-        if bool(args.save_checkpoint) and val_occupancy_f1 is not None and float(val_occupancy_f1) > best_val_occupancy_f1:
-            best_val_occupancy_f1 = float(val_occupancy_f1)
-            checkpoint_path = save_checkpoint(
-                output_dir / "checkpoints" / "checkpoint_best_val_occupancy_f1.pt",
-                model=model,
-                optimizer=optimizer,
-                config=config,
-                args=args,
-                train_history=train_history,
-                test_metrics={
-                    "selection": "best_val_occupancy_f1",
-                    "epoch": int(epoch + 1),
-                    "val": val_metrics,
-                    "occupancy_f1": float(val_occupancy_f1),
-                },
-            )
-            best_checkpoints["best_val_occupancy_f1"] = {
-                "path": checkpoint_path,
-                "epoch": int(epoch + 1),
-                "occupancy_f1": float(val_occupancy_f1),
-            }
         val_pixel_f1 = val_metrics.get("pixel_f1")
         if bool(args.save_checkpoint) and val_pixel_f1 is not None and float(val_pixel_f1) > best_val_pixel_f1:
             best_val_pixel_f1 = float(val_pixel_f1)
@@ -1329,28 +1145,6 @@ def main(argv: list[str] | None = None) -> int:
                 "path": checkpoint_path,
                 "epoch": int(epoch + 1),
                 "pixel_f1": float(val_pixel_f1),
-            }
-        val_spatial_overlap = val_metrics.get("spatial_overlap_mean_positive")
-        if bool(args.save_checkpoint) and val_spatial_overlap is not None and float(val_spatial_overlap) > best_val_spatial_overlap:
-            best_val_spatial_overlap = float(val_spatial_overlap)
-            checkpoint_path = save_checkpoint(
-                output_dir / "checkpoints" / "checkpoint_best_val_spatial_overlap.pt",
-                model=model,
-                optimizer=optimizer,
-                config=config,
-                args=args,
-                train_history=train_history,
-                test_metrics={
-                    "selection": "best_val_spatial_overlap",
-                    "epoch": int(epoch + 1),
-                    "val": val_metrics,
-                    "spatial_overlap_mean_positive": float(val_spatial_overlap),
-                },
-            )
-            best_checkpoints["best_val_spatial_overlap"] = {
-                "path": checkpoint_path,
-                "epoch": int(epoch + 1),
-                "spatial_overlap_mean_positive": float(val_spatial_overlap),
             }
         print(json.dumps(epoch_metrics, ensure_ascii=False, indent=2))
 
@@ -1390,7 +1184,6 @@ def main(argv: list[str] | None = None) -> int:
         "batch_size": int(args.batch_size),
         "input_channels": input_channels,
         "grad_clip_norm": float(grad_clip_norm),
-        "spatial_initialization": spatial_initialization,
         "smoke_filters": {
             "skip_ph_anchor_zero": bool(args.skip_ph_anchor_zero),
             "max_patches_per_scene": int(args.max_patches_per_scene),

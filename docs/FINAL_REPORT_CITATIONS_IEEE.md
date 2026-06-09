@@ -17,10 +17,11 @@ AIS/GeoJSON-derived supervision
 KR EEZ + 12 nm sea mask
 cripser/DRUID-inspired H0 persistent-homology partitioning
 PH-assisted exact-cover patch construction
-Gaussian point-to-spatial target construction without PH censoring
-OccupancySpatial U-Net
-patch-level ship O/X plus positive-patch spatial-distribution learning
-full-scene occupancy evidence heatmap merge
+Gaussian point-to-density target construction for visualization only
+hard pixel occupancy target from raw_count > 0
+PixelBinaryOccupancy U-Net
+per-pixel ship-presence probability learning
+full-scene pixel-probability heatmap merge
 ```
 
 ## Core Citations

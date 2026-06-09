@@ -1,55 +1,45 @@
 # DNB_AIS
 
-Research code for VIIRS DNB nighttime-light ship-density estimation using AIS-derived supervision.
+Research code for VIIRS DNB nighttime ship-presence mapping with AIS-derived supervision.
 
-The active deep-learning direction is PH-assisted U-Net occupancy/spatial heatmap prediction:
+The active deep-learning path is now deliberately narrow:
 
 ```text
 DNB GeoTIFF brightness + sea mask + PH hierarchy features
--> multi-channel crop tensor
--> U-Net occupancy/spatial model
--> per-pixel ship-presence evidence heatmap
+-> recursive PH exact-cover patches
+-> PixelBinaryOccupancyUNet
+-> per-pixel ship-presence probability
 ```
 
-The GAT executable code path has been removed from active source. Historical GAT notes and logs remain only in archive/log documents for design-history reference.
+Older count-regression, occupancy/spatial-softmax, brightness-threshold baseline, and preview/render variants are archived under `_archive/retired_density_complexity_20260609/` so they can be recovered without remaining in the active path.
 
 ## Current Status
 
-- Active model family: `OccupancySpatialUNet`.
-- Active baseline config: `configs/dnb_density_unet_occupancy_spatial.json`.
-- Active target: O/X patch occupancy plus positive-patch spatial distribution from AIS/bbox ground truth.
-- Active partitioning: PH anchors first, fallback grid second, so valid sea pixels are covered.
-- Active PH mode: H0 components from `cripser`, with hierarchical child PH splitting for oversized anchors.
-- Deferred target: direct ship-count regression. See `docs/count_reintroduction/COUNT_HEAD_REINTRODUCTION_PLAN.md`.
-- Preferred device: Apple MPS on the M2 Max MacBook Pro.
-- Runtime outputs, checkpoints, GeoTIFFs, NetCDFs, DB files, NumPy arrays, and bulk bbox outputs are intentionally not tracked by git.
-- Retired count/inverse/fast-density configs and scripts live under `_archive/legacy_density_configs_20260608/`.
+- Active model: `PixelBinaryOccupancyUNet`.
+- Active loss: `pixel_binary_occupancy_loss`.
+- Active config: `configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json`.
+- Active target: hard pixel occupancy, `target_pixel = 1[raw_count > 0]`, masked by the valid partition owner sea mask.
+- Active partitioning: PH anchors first, recursive PH subdivision for oversized anchors, fallback grid for exact sea-pixel coverage.
+- Primary metrics: `pixel_f1`, `pixel_iou`, `pixel_precision`, `pixel_recall`, `pixel_brier`.
+- Secondary diagnostics only: patch-level `occupancy_*`, `spatial_overlap_mean_positive`, and mass-ratio metrics.
 
 ## Repository Layout
 
 ```text
-configs/                       Model, loss, target, detector, and experiment configs.
-sub_module/                    Active reusable Python modules and runnable entrypoints.
-scripts/                       Repo maintenance and experiment helper scripts.
-docs/                          Design notes, workflow docs, and curated experiment reports.
-docs/experiments/              Lightweight experiment summaries promoted from runtime outputs.
-outputs/                       Ignored runtime outputs; only outputs/README.md is tracked.
-artifacts/                     Ignored long-lived artifact area; only artifacts/README.md is tracked.
+configs/                       Active experiment config.
+sub_module/                    Active Python modules and runnable entrypoints.
+scripts/                       Repo maintenance and active experiment helper scripts.
+docs/                          Active design notes, workflow docs, and current experiment summaries.
+docs/experiments/              Curated current experiment reports.
+outputs/                       Ignored runtime outputs; only lightweight metadata should be promoted.
+artifacts/                     Ignored long-lived artifact area.
 _Readings/                     Classified research readings and notes.
 _Meetings/                     Meeting notes.
 _archive/                      Archived or retired project material.
-[3]_DNB_AIS - (STEP 3)/        Active operational workspace for A/D/E preprocessing jobs.
+[3]_DNB_AIS - (STEP 3)/        Operational data/preprocessing workspace.
 ```
 
-`[3]_DNB_AIS - (STEP 3)` is still kept in place because current operational scripts and some pipeline defaults use exact paths there.
-
-Important STEP3 scripts:
-
-```text
-[A]_dnb2geotif_v2_modified_4326_metadata.py   DNB L1/NetCDF to GeoTIFF conversion/compositing.
-[D]_ship_class_SQL_fast.py                    Optimized AIS interpolation and DB update workflow.
-[E]_bounding_box.py                           Bbox/GeoJSON rebuild workflow.
-```
+`[3]_DNB_AIS - (STEP 3)` stays in place because preprocessing and ground-truth resolution still use exact local paths there.
 
 ## Data And Artifact Policy
 
@@ -64,29 +54,9 @@ bulk bbox/GeoJSON output folders
 bulk outputs/ run directories
 ```
 
-Runtime artifacts should live under `outputs/` or `artifacts/` and include metadata when possible:
-
-```text
-git_commit
-git_dirty
-config path and config hash
-scene split manifest
-target generation config
-model config
-checkpoint paths
-```
-
-If a checkpoint is created from dirty code, save the diff in the run directory as `run_git_dirty.patch`.
+Runtime artifacts should live under `outputs/` or `artifacts/` and record config path/hash, scene split, target config, model config, checkpoint paths, and git state.
 
 ## Environment
-
-The current local Python environment is expected to be the conda environment used by the DNB/AIS project:
-
-```bash
-/Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python
-```
-
-For commands below, either activate that environment or set:
 
 ```bash
 export DNB_AIS_PYTHON=/Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python
@@ -97,45 +67,33 @@ export PYTHONUNBUFFERED=1
 
 ## Quick Checks
 
-Run lightweight source checks before committing code changes:
-
 ```bash
 ./scripts/git_ai_status.sh
 /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python -m py_compile sub_module/*.py
 git diff --check
 ```
 
-Notebook output hygiene check:
+## Active Training Command
+
+Foreground run:
 
 ```bash
-./scripts/strip_notebook_outputs.py --check "[3]_DNB_AIS - (STEP 3)/[C]_metadata_analyzer.ipynb"
-```
-
-## Split Smoke Training
-
-The current standard pilot training script is:
-
-```bash
-bash scripts/run_density_occupancy_spatial_patchmix.sh
+bash scripts/run_density_pixel_binary_recursive_ph.sh
 ```
 
 Useful overrides:
 
 ```bash
-RUN_TAG=occupancy_spatial_manual_$(date +%Y%m%d_%H%M%S) \
-EPOCHS=20 \
-BATCH_SIZE=2 \
-MAX_SCENES_PER_SPLIT=30 \
+RUN_TAG=pixel_binary_manual_$(date +%Y%m%d_%H%M%S) \
+EPOCHS=18 \
+BATCH_SIZE=8 \
 MAX_PATCHES_PER_SCENE=64 \
-MAX_PH_PATCHES_PER_SCENE=48 \
-MAX_FALLBACK_PATCHES_PER_SCENE=16 \
-POSITIVE_PATCHES_PER_SCENE=24 \
-NEGATIVE_PATCHES_PER_SCENE=24 \
-SELECTION_SEED=20260608 \
-bash scripts/run_density_occupancy_spatial_patchmix.sh
+POSITIVE_PATCHES_PER_SCENE=32 \
+NEGATIVE_PATCHES_PER_SCENE=32 \
+bash scripts/run_density_pixel_binary_recursive_ph.sh
 ```
 
-Typical run output path:
+Typical output path:
 
 ```text
 outputs/dnb_density/runs/<run_tag>/
@@ -147,73 +105,45 @@ Monitor a run:
 tail -f outputs/dnb_density/runs/<run_tag>/run.log
 ```
 
-## Enhanced Preview Rendering
-
-After a training run, render qualitative prediction previews:
+Evaluate the active checkpoint:
 
 ```bash
 PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
-  -m sub_module.render_density_enhanced_previews \
+  -m sub_module.evaluate_density_checkpoint \
   --run-dir outputs/dnb_density/runs/<run_tag> \
+  --checkpoint best_val_pixel_f1 \
   --split test \
-  --checkpoint-kind best_val_occupancy_f1 \
+  --calibration-split val \
   --device mps
 ```
 
-Preview panels are designed to compare brightness, PH structure, target density, prediction density, explained density overlap, and absolute error.
+## Method Notes
 
-Full-scene merged prediction:
-
-```bash
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
-  -m sub_module.render_density_full_scene_predictions \
-  --run-dir outputs/dnb_density/runs/<run_tag> \
-  --split test \
-  --checkpoint-kind best_val_occupancy_f1 \
-  --limit-scenes 3 \
-  --device mps
-```
-
-Heuristic baseline evaluation:
-
-```bash
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
-  -m sub_module.evaluate_density_baselines \
-  --scene-split-csv outputs/dnb_density/splits/density_smoke_split_10_3_2/scene_split.csv \
-  --config configs/dnb_density_unet_occupancy_spatial.json \
-  --calibration-split train \
-  --eval-split test
-```
-
-## Core Method Notes
-
-The active model predicts continuous occupancy evidence, not integer count classes.
+The active model predicts independent per-pixel probabilities:
 
 ```text
-model(input) -> P(ship exists in patch), p(pixel | ship exists)
-occupancy_heatmap[h, w] = P(ship exists in patch) * p(pixel | ship exists)
+P_pixel = sigmoid(pixel_logits)
+Y_pixel = 1[raw_count > 0]
 ```
 
-The patch-level prediction sum is a probability of ship presence. Direct count regression is deferred until O/X and localization are stable, then count can be reintroduced as a conditional positive-patch head.
+This replaces the retired spatial-softmax interpretation:
 
-PH is used as a structural prior and partitioning mechanism, not as a hard censor for supervision. Ground-truth ships inside the crop can still contribute to the target even if strict PH masks miss them.
+```text
+retired: P(patch positive) * softmax(pixel | positive patch)
+active: independent valid-pixel ship-presence probability
+```
+
+The patch-level O/X head remains only as a small auxiliary regularizer. It is not the main reporting target.
+
+GT smoothing is not used as the supervised label. It remains acceptable for visualization because DNB light is physically diffuse, but AIS identity labels should not be spread into neighboring pixels for the primary loss.
 
 ## Key Docs
 
-- `docs/ACTIVE_WORKSPACE_MAP.md`: current directory and workspace policy.
-- `docs/DNB_DENSITY_MODEL_SCAFFOLD.md`: active U-Net density model design.
+- `docs/experiments/density_pixel_binary_recursive_ph_hardtarget_20260609.md`: current experiment rationale and metric interpretation.
 - `docs/PH_HIERARCHY_UNET_HYBRID_DESIGN.md`: PH hierarchy and U-Net integration design.
-- `docs/DNB_DENSITY_OUTPUT_WORKSPACE_20260602.md`: output workspace organization.
-- `docs/DENSITY_PIPELINE_REVIEW_20260608.md`: full pipeline review, quantitative metrics, and performance plan.
-- `docs/count_reintroduction/COUNT_HEAD_REINTRODUCTION_PLAN.md`: deferred count-head design and reintroduction criteria.
-- `docs/experiments/density_count_spatial_good_baseline_20260602.md`: historical count-spatial qualitative baseline record.
+- `docs/FINAL_REPORT_PREP_IEEE.md`: final-report structure aligned to the active pipeline.
+- `_archive/retired_density_complexity_20260609/README.md`: list of retired configs/scripts/docs/utilities and restore pattern.
 
 ## Git Workflow
 
-This repository follows the project policy in `AGENTS.md`:
-
-- commit meaningful code, config, doc, and experiment scaffold progress;
-- stage only focused related files;
-- never stage heavy generated artifacts;
-- run lightweight checks before commits;
-- do not push unless explicitly requested.
+This repository follows `AGENTS.md`: commit focused meaningful code/config/doc progress, do not stage heavy generated artifacts, run lightweight checks before commit, and do not push unless explicitly requested.

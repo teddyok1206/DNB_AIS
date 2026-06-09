@@ -1,77 +1,39 @@
 # Final Report Prep - IEEE-Style EESRL Report
 
-This document prepares the final-report writing workflow for the active DNB/AIS pipeline.
+This document keeps the final-report plan aligned with the active DNB/AIS density pipeline.
 
-## Source Midterm Report
+## Important Pivot
 
-Located EESRL report folder:
+The midterm report was written around a DRUID + GAT direction. That path is historical only.
 
-```text
-/Users/jungtaeuk/Desktop/26-1 Semester/EESRL_Earth_and_Environmental_Science_Research_Lab
-```
-
-Midterm final PDF:
+The active final-report method is now:
 
 ```text
-/Users/jungtaeuk/Desktop/26-1 Semester/EESRL_Earth_and_Environmental_Science_Research_Lab/정태욱_지구환경과학연구실습_중간보고서_최종.pdf
+PH-assisted recursive exact-cover patching + PixelBinaryOccupancyUNet
 ```
 
-Important pivot:
+The main label is hard pixel ship presence from AIS-derived raw count pixels:
 
 ```text
-The midterm report was written around a DRUID + GAT direction.
-The active final-report method is now PH-assisted OccupancySpatial U-Net: patch-level ship O/X plus positive-patch spatial localization.
-GAT and direct count regression are historical design paths only.
+Y_pixel = 1[raw_count > 0]
 ```
 
-## Final Report Target Form
-
-Use an IEEE-like technical paper structure even if the final submission is not required to be exact IEEEtran.
-
-Recommended LaTeX base:
-
-```latex
-\documentclass[conference]{IEEEtran}
-\usepackage{graphicx}
-\usepackage{amsmath,amssymb}
-\usepackage{booktabs}
-\usepackage{cite}
-\usepackage{url}
-```
-
-If Korean body text is required, use a XeLaTeX/LuaLaTeX-compatible Korean template instead of forcing Korean into plain `IEEEtran`.
+Patch-level O/X, smoothed density maps, brightness baselines, and count regression are secondary or archived material unless explicitly revived.
 
 ## Active Method Summary
 
 ```text
-problem: VIIRS DNB pixels are coarse enough that multiple vessel lights can overlap.
+problem: VIIRS DNB pixels are coarse enough that vessel lights can overlap and bloom.
 data: 2025 JPSS-2/VIIRS DNB GeoTIFF + AIS-derived GeoJSON point/bbox supervision.
 preprocessing: arctan-encoded DNB brightness, KR EEZ + 12 nm sea mask, day-level split.
-structure prior: H0 persistent-homology anchors from encoded brightness, hierarchical PH rerun for oversized anchors, exact-cover sea partition with fallback tiles.
-model: OccupancySpatialUNet.
-output: occupancy evidence heatmap, not expected integer ship-count density.
-training target: patch O/X label plus normalized positive-patch spatial density target.
+structure prior: H0 persistent-homology anchors from encoded brightness.
+partitioning: PH anchors first, recursive PH rerun for oversized anchors, fallback tiles for exact valid-sea coverage.
+model: PixelBinaryOccupancyUNet.
+output: independent per-pixel ship-presence probability.
+training target: hard valid-pixel O/X from raw_count > 0.
 ```
 
-Model decomposition:
-
-```text
-P = sigmoid(occupancy_logit)                         # probability that the patch contains at least one ship
-S = softmax(spatial_logits over valid owner pixels)  # pixel distribution conditional on a positive patch
-Y_pred = P * S                                       # occupancy evidence heatmap
-```
-
-Target construction:
-
-```text
-raw AIS/GeoJSON points -> Gaussian kernel target over valid sea pixels
-positive patch: target_count > 0
-T = target_density / sum(target_density) for positive patches
-negative patch: T = 0 and O/X target = 0
-PH masks are input/attention priors, not GT censoring masks.
-```
-
-Current input channels from `configs/dnb_density_unet_occupancy_spatial.json`:
+Current input channels from `configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json`:
 
 ```text
 0 brightness
@@ -83,6 +45,40 @@ Current input channels from `configs/dnb_density_unet_occupancy_spatial.json`:
 6 anchor_lifetime_map
 ```
 
+## Core Equations
+
+```text
+encoded = (2 / pi) * arctan(radiance / 1e-9)
+Y_pixel = 1[raw_count_pixel > 0] * valid_owner_mask
+P_pixel = sigmoid(pixel_logits) * valid_owner_mask
+O_target = 1[sum(Y_pixel) > 0]
+P_patch = sigmoid(occupancy_logit)
+```
+
+Main loss:
+
+```text
+L = lambda_pixel * BCEWithLogits(pixel_logits, Y_pixel)
+  + lambda_patch * BCEWithLogits(occupancy_logit, O_target)
+  + lambda_dice * Dice(pixel_logits, Y_pixel)   # currently disabled
+```
+
+Current config:
+
+```text
+lambda_pixel = 0.9
+lambda_patch = 0.1
+lambda_dice = 0.0
+pixel_pos_weight = 256.0
+```
+
+GT smoothing note:
+
+```text
+DNB brightness is physically diffuse, so smoothed GT remains acceptable for visualization panels.
+It is not the supervised label. AIS-derived identity should not be spread into neighboring pixels for the main O/X objective.
+```
+
 ## Proposed Final Report Outline
 
 ### 1. Abstract
@@ -90,22 +86,22 @@ Current input channels from `configs/dnb_density_unet_occupancy_spatial.json`:
 Include:
 
 ```text
-problem: low-resolution nighttime vessel-light overlap in VIIRS DNB scenes
-data: 2025 JPSS-2/VIIRS DNB GeoTIFF and AIS-derived supervision
-method: sea masking + PH-assisted exact-cover partitioning + OccupancySpatial U-Net
-output: full-scene occupancy evidence heatmap
-result: final train/validation/test O/X and spatial-localization metrics
+VIIRS DNB low-resolution nighttime vessel-light overlap
+AIS-derived supervision
+PH-assisted recursive exact-cover patch construction
+PixelBinaryOccupancyUNet per-pixel ship-presence mapping
+final train/validation/test pixel metrics
 ```
 
 ### 2. Introduction
 
-Keep the midterm motivation:
+Emphasize:
 
 ```text
 AIS-only monitoring has blind spots.
-VIIRS DNB directly observes nighttime lights over large sea areas.
-Low spatial resolution makes individual-vessel detection hard in dense clusters.
-Therefore the current final task is ship-presence heatmap estimation and localization, with count reintroduction deferred until O/X and localization are reliable.
+VIIRS DNB observes nighttime lights over large sea areas.
+Direct integer count is poorly posed at current pixel/patch scale.
+The final task is therefore ship-presence probability mapping, with count reintroduction deferred.
 ```
 
 ### 3. Data
@@ -113,18 +109,18 @@ Therefore the current final task is ship-presence heatmap estimation and localiz
 Subsections:
 
 ```text
-3.1 VIIRS DNB GeoTIFF full-scene imagery
+3.1 VIIRS DNB GeoTIFF scenes
 3.2 AIS interpolation and GeoJSON-derived supervision
 3.3 KR EEZ + 12 nm sea mask
 3.4 Day-level train/validation/test split
 ```
 
-Required tables:
+Tables:
 
 ```text
-Table I: final split by days and scenes
-Table II: scene/patch counts after PH-anchor-zero filtering
-Table III: positive/negative patch distribution by split
+Table I: split by days and scenes
+Table II: selected patch counts by split
+Table III: valid-pixel positive/negative distribution by split
 ```
 
 ### 4. Method
@@ -133,183 +129,87 @@ Subsections:
 
 ```text
 4.1 DNB radiance preprocessing and arctan encoding
-4.2 AIS-to-image time/position matching
+4.2 AIS-to-image supervision rasterization
 4.3 KR sea masking
-4.4 PH-assisted full-scene partitioning
-4.5 PH feature-channel construction
-4.6 OccupancySpatial U-Net architecture
-4.7 O/X + spatial-distribution loss
-4.8 Patch inference and full-scene prediction merge
-4.9 Count head as deferred extension
-```
-
-Core equations:
-
-```text
-encoded = (2 / pi) * arctan(radiance / 1e-9)
-
-O_target = 1[sum(target_density over valid owner pixels) > 0]
-
-T_pixel = target_density_pixel / sum(target_density over valid owner pixels)  for positive patches
-
-P = sigmoid(occupancy_logit)
-S_pixel = softmax(spatial_logits over valid owner pixels)
-Y_pred_pixel = P * S_pixel
-
-L = lambda_occ * BCE(P, O_target) + lambda_spatial * KL(T || S) on positive patches
-```
-
-Lifetime use:
-
-```text
-PH lifetime is currently used as an input channel and as optional sample weighting through normalized log1p(anchor_lifetime).
-It is not used to rescale final prediction mass, because the active output mass is an occupancy probability rather than an integer count.
+4.4 PH-assisted exact-cover partitioning
+4.5 Recursive PH subdivision for oversized anchors
+4.6 PH feature-channel construction
+4.7 PixelBinaryOccupancyUNet architecture
+4.8 Hard pixel O/X loss and auxiliary patch O/X head
+4.9 Patch inference and full-scene merge
+4.10 Deferred count head extension
 ```
 
 ### 5. Experiments
 
-Include:
+Report:
 
 ```text
 hardware: Apple Silicon Mac, MPS backend
-training config: epochs, batch size, patch caps, optimizer, lr
-split policy: day-level split to avoid same-day leakage
-checkpoint policy: last, best validation loss, best validation occupancy F1, best validation occupancy mass ratio
+config: configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json
+split: outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv
+checkpoint policy: last, best validation loss, best validation pixel F1
+threshold policy: fixed 0.5 plus validation-calibrated threshold for pixel F1
 ```
-
-Baseline comparison protocol:
-
-```text
-Do not call the comparison model a legacy method unless a true historical implementation is being reproduced.
-Use the name "rule-based brightness threshold baseline".
-
-Baseline rule:
-  pred_positive_patch = any(encoded_brightness >= threshold over valid owner pixels)
-  pred_spatial_map = normalize(binary_threshold_mask over valid owner pixels)
-
-Threshold candidates:
-  primary sweep: 0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.90, 0.95 over arctan-encoded DNB brightness
-  include 0.85, 0.90, 0.95 as high-threshold cases, but do not restrict the baseline to them because encoded DNB brightness often peaks below 0.85 in the current GeoTIFF products
-
-Selection:
-  evaluate all threshold candidates on validation
-  select the threshold with best validation occupancy_f1
-  break ties by spatial_overlap_mean_positive, target_explained, then lower occupancy_brier
-  report the selected threshold on test without retuning
-
-Fairness constraint:
-  use the exact same scene_split.csv and patch-selection settings as the active U-Net run
-```
-
-Runnable baseline command:
-
-```sh
-SCENE_SPLIT_CSV=outputs/dnb_density/splits/<run_tag>/scene_split.csv \
-RUN_TAG=brightness_threshold_<run_tag> \
-bash scripts/run_brightness_threshold_baseline.sh
-```
-
-Outputs:
-
-```text
-outputs/dnb_density/baselines/<run_tag>/brightness_threshold_metrics_by_split.csv
-outputs/dnb_density/baselines/<run_tag>/brightness_threshold_selected_threshold_metrics.csv
-outputs/dnb_density/baselines/<run_tag>/brightness_threshold_scene_build_metrics.csv
-outputs/dnb_density/baselines/<run_tag>/brightness_threshold_summary.json
-```
-
-For repeated threshold-only sweeps, cache the selected patches on SSD first:
-
-```sh
-SCENE_SPLIT_CSV=outputs/dnb_density/splits/<run_tag>/scene_split.csv \
-CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/<cache_tag> \
-bash scripts/build_brightness_threshold_patch_cache.sh
-```
-
-Then sweep thresholds without rebuilding PH anchors or patches:
-
-```sh
-CACHE_DIR=/Volumes/SAMSUNG/dnb_density_patch_cache/<cache_tag> \
-THRESHOLDS='0.25,0.275,0.30,0.325,0.35,0.375,0.40,0.425,0.45,0.475,0.50,0.525,0.55' \
-bash scripts/sweep_brightness_threshold_patch_cache.sh
-```
-
-### 6. Results
 
 Primary metrics:
 
 ```text
-occupancy_accuracy
-occupancy_precision
-occupancy_recall
-occupancy_f1
-occupancy_brier
-spatial_overlap_mean_positive
-target_explained
-pred_matched
-occupancy_mass_ratio_abs_log_error
+pixel_precision
+pixel_recall
+pixel_f1
+pixel_iou
+pixel_brier
 ```
 
-Interpretation:
+Secondary diagnostics:
 
 ```text
-occupancy metrics evaluate whether the model knows a patch contains any vessel signal.
-spatial_overlap_mean_positive evaluates whether positive-patch mass is placed in the right pixels.
-target_explained and pred_matched describe how much predicted/target mass overlaps after masking.
-occupancy_mass_* is diagnostic only; it is not integer ship-count error.
+occupancy_f1: patch auxiliary behavior only
+spatial_overlap_mean_positive: retired softmax-style localization diagnostic only
+pred_target_ratio: probability-mass vs positive-pixel-count diagnostic, not ship-count error
 ```
+
+### 6. Results
 
 Required figures:
 
 ```text
-Figure 1: overall active pipeline diagram
-Figure 2: VIIRS DNB full scene + KR sea mask
-Figure 3: PH anchor / child / fallback partition visualization
-Figure 4: patch-level input-channel preview showing all PH features
-Figure 5: patch-level target/prediction/error preview
-Figure 6: full-scene merged occupancy evidence heatmap
-Figure 7: train/validation loss, occupancy F1, and spatial-overlap curves
-Figure 8: selected qualitative success/failure cases
+Figure 1: active pipeline diagram
+Figure 2: VIIRS DNB scene + KR sea mask
+Figure 3: PH parent / recursive child / fallback partition visualization
+Figure 4: patch input channels with PH features
+Figure 5: target pixel O/X, predicted probability, thresholded prediction, error map
+Figure 6: train/validation loss and pixel F1 curves
+Figure 7: representative success/failure test patches or scenes
 ```
 
-Required comparison table:
+Required tables:
 
 ```text
-Table IV: rule-based brightness threshold baseline vs PH-assisted OccupancySpatial U-Net
-
-Rows:
-  brightness >= 0.35
-  brightness >= 0.45
-  brightness >= 0.55
-  brightness >= 0.65
-  brightness >= 0.75
-  brightness >= 0.85
-  brightness >= 0.90
-  brightness >= 0.95
-  best brightness threshold selected on validation
-  PH-assisted OccupancySpatial U-Net
-
-Columns:
-  occupancy_precision
-  occupancy_recall
-  occupancy_f1
-  occupancy_brier
-  spatial_overlap_mean_positive
-  target_explained
-  pred_matched
+Table IV: final checkpoint metrics on train/val/test
+Table V: fixed 0.5 threshold vs validation-calibrated threshold on test
 ```
+
+If a baseline is included, label it clearly as archived/secondary:
+
+```text
+rule-based brightness threshold baseline
+```
+
+Do not present the retired occupancy/spatial-softmax model as the active method.
 
 ### 7. Discussion
 
 Discuss:
 
 ```text
-why O/X + localization is better posed than direct count regression at this stage
-why PH is used as structure/input prior, not as a hard label mask
-why count is deferred and how a conditional count head can be reintroduced
-cloud/bright outlier issue from arctan-preserved imagery
-limitations of AIS-derived supervision
-limitations caused by sparse positive examples and patch-scale variation
+why hard pixel O/X is better posed than direct count at current resolution
+why GT smoothing is visualization-only, not label spreading
+why PH is a partition/input prior rather than a label censor
+how recursive PH addresses oversized patches
+limitations from AIS supervision, DNB blooming, cloud/bright artifacts, and sparse positives
+what would justify reintroducing count prediction later
 ```
 
 ### 8. Conclusion
@@ -317,52 +217,20 @@ limitations caused by sparse positive examples and patch-scale variation
 State:
 
 ```text
-The completed active pipeline predicts full-scene vessel-presence evidence from DNB brightness and PH-derived topological features.
-It is evaluated first as O/X detection plus spatial localization, not as final integer count estimation.
+The completed pipeline maps DNB and PH-derived features to per-pixel vessel-presence probability.
+It is evaluated as pixel O/X detection and localization, not as final integer vessel counting.
 ```
 
 ## Citation File
 
-Use:
-
-```text
-docs/FINAL_REPORT_CITATIONS_IEEE.md
-```
-
-When citation information changes, update that file first.
-
-## Full-Scene Prediction Figure Generation
-
-Patch previews explain local model behavior. For report figures, use the full-scene merge utility:
-
-```sh
-PYTHONPATH=. /Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python \
-  -m sub_module.render_density_full_scene_predictions \
-  --run-dir outputs/dnb_density/runs/<run_tag> \
-  --split test \
-  --limit-scenes 1 \
-  --checkpoint-kind best_val_occupancy_f1 \
-  --device mps
-```
-
-Outputs:
-
-```text
-outputs/dnb_density/runs/<run_tag>/full_scene_predictions/<scene_key>/<scene_key>_full_scene_prediction.png
-outputs/dnb_density/runs/<run_tag>/full_scene_predictions/<scene_key>/<scene_key>_full_scene_metrics.json
-outputs/dnb_density/runs/<run_tag>/full_scene_predictions/full_scene_prediction_metrics.csv
-```
-
-Do not commit generated PNG/JSON/CSV outputs unless a small curated metric summary is explicitly needed.
+Use `docs/FINAL_REPORT_CITATIONS_IEEE.md`. Update that file before changing references.
 
 ## Next Report-Readiness Tasks
 
-Before writing the final report:
-
 ```text
-1. run the overnight O/X + spatial train/validation/test experiment
-2. generate patch previews with all PH input channels
-3. generate full-scene merged predictions for representative test scenes
-4. freeze final metric table
-5. draft final LaTeX from this outline
+1. finish the active pixel-binary recursive PH experiment
+2. freeze best_val_pixel_f1 test metrics with fixed and calibrated thresholds
+3. generate qualitative target/probability/error panels
+4. prepare final metric tables
+5. draft the final LaTeX report from this outline
 ```

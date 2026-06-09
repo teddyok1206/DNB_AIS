@@ -22,13 +22,14 @@ from .dnb_density_common import (
     move_density_batch_to_device,
     summarize_density_patches,
 )
+from .dnb_density_losses import (
+    PixelBinaryOccupancyLoss,
+    PixelBinaryOccupancyLossConfig,
+    build_density_loss,
+)
 from .dnb_density_models import (
-    CountSpatialDensityUNet,
     DensityModelConfig,
-    DualRadianceCountSpatialUNet,
-    MaskedDensityUNet,
-    MaskedDilatedDensityNet,
-    OccupancySpatialUNet,
+    PixelBinaryOccupancyUNet,
     build_density_model,
 )
 from .kr_sea_mask import (
@@ -70,12 +71,11 @@ __all__ = [
     "move_density_batch_to_device",
     "summarize_density_patches",
     "DensityModelConfig",
-    "CountSpatialDensityUNet",
-    "DualRadianceCountSpatialUNet",
-    "MaskedDensityUNet",
-    "MaskedDilatedDensityNet",
-    "OccupancySpatialUNet",
+    "PixelBinaryOccupancyUNet",
     "build_density_model",
+    "PixelBinaryOccupancyLoss",
+    "PixelBinaryOccupancyLossConfig",
+    "build_density_loss",
     "KRSeaMaskResult",
     "apply_kr_sea_mask",
     "load_kr_sea_geometry",

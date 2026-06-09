@@ -41,7 +41,7 @@ artifacts/dnb_density_unet/run_YYYYMMDD_HHMMSS/
   "config_path": "configs/dnb_density_unet_base.json",
   "config_sha256": "<hash>",
   "scene_split_manifest": "<path>",
-  "model_class": "MaskedDensityUNet",
+  "model_class": "PixelBinaryOccupancyUNet",
   "target_builder": "sum_preserving_pixel_kernel",
   "checkpoint_last": "checkpoint_last.pt",
   "checkpoint_best": "checkpoint_best.pt"
