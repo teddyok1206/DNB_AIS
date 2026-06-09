@@ -72,6 +72,18 @@ def checkpoint_path_from_summary(summary: dict[str, Any], checkpoint: str, expli
     return Path(str(raw_path)).expanduser().resolve()
 
 
+def checkpoint_path_from_run_dir(run_dir: Path, checkpoint: str, explicit: Path | None) -> Path:
+    if explicit is not None:
+        return explicit.expanduser().resolve()
+    if checkpoint == "last":
+        candidate = run_dir / "checkpoints" / "checkpoint_last.pt"
+    else:
+        candidate = run_dir / "checkpoints" / f"checkpoint_{checkpoint}.pt"
+    if not candidate.exists():
+        raise FileNotFoundError(f"Checkpoint selection {checkpoint!r} is missing: {candidate}")
+    return candidate.expanduser().resolve()
+
+
 def patch_cache_dir_from_summary(summary: dict[str, Any]) -> Path:
     raw_dir = summary.get("patch_cache", {}).get("dir") if isinstance(summary.get("patch_cache"), dict) else None
     if not raw_dir:
@@ -169,13 +181,28 @@ def best_threshold_by_f1(probs: np.ndarray, targets: np.ndarray, grid_size: int)
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
-    summary = read_json(run_dir / "run_summary.json")
-    checkpoint_path = checkpoint_path_from_summary(summary, str(args.checkpoint), args.checkpoint_path)
+    summary_path = run_dir / "run_summary.json"
+    summary = read_json(summary_path) if summary_path.exists() else {}
+    checkpoint_path = (
+        checkpoint_path_from_summary(summary, str(args.checkpoint), args.checkpoint_path)
+        if summary
+        else checkpoint_path_from_run_dir(run_dir, str(args.checkpoint), args.checkpoint_path)
+    )
     config_path = run_dir / "config_snapshot.json"
-    config = read_json(config_path) if config_path.exists() else read_json(Path(str(summary["config_path"])))
+    if config_path.exists():
+        config = read_json(config_path)
+    elif summary:
+        config = read_json(Path(str(summary["config_path"])))
+    else:
+        raise FileNotFoundError(f"Missing config_snapshot.json and run_summary.json in {run_dir}")
     device = resolve_required_device(str(args.device))
     model, loss_fn, config = load_model_and_loss(checkpoint_path, config, device)
-    cache_dir = args.patch_cache_dir.expanduser().resolve() if args.patch_cache_dir is not None else patch_cache_dir_from_summary(summary)
+    if args.patch_cache_dir is not None:
+        cache_dir = args.patch_cache_dir.expanduser().resolve()
+    elif summary:
+        cache_dir = patch_cache_dir_from_summary(summary)
+    else:
+        raise KeyError("Interrupted runs without run_summary.json require --patch-cache-dir.")
     eval_patches, eval_cache_metadata = load_patch_split_cache(cache_dir, str(args.split))
     calibration_patches, calibration_cache_metadata = load_patch_split_cache(cache_dir, str(args.calibration_split))
     batch_size = int(args.batch_size if args.batch_size is not None else summary.get("batch_size", 4))
