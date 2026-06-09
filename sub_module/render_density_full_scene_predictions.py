@@ -46,7 +46,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="mps")
     parser.add_argument(
         "--checkpoint-kind",
-        choices=["last", "best_val_loss", "best_val_count_ratio", "best_val_occupancy_mass_ratio", "best_val_occupancy_f1"],
+        choices=[
+            "last",
+            "best_val_loss",
+            "best_val_count_ratio",
+            "best_val_occupancy_mass_ratio",
+            "best_val_occupancy_f1",
+            "best_val_spatial_overlap",
+        ],
         default="last",
     )
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")

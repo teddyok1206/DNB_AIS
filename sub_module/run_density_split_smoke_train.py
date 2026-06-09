@@ -1140,6 +1140,7 @@ def main(argv: list[str] | None = None) -> int:
     best_val_loss = float("inf")
     best_val_mass_ratio_error = float("inf")
     best_val_occupancy_f1 = -float("inf")
+    best_val_spatial_overlap = -float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
             model=model,
@@ -1230,6 +1231,28 @@ def main(argv: list[str] | None = None) -> int:
                 "path": checkpoint_path,
                 "epoch": int(epoch + 1),
                 "occupancy_f1": float(val_occupancy_f1),
+            }
+        val_spatial_overlap = val_metrics.get("spatial_overlap_mean_positive")
+        if bool(args.save_checkpoint) and val_spatial_overlap is not None and float(val_spatial_overlap) > best_val_spatial_overlap:
+            best_val_spatial_overlap = float(val_spatial_overlap)
+            checkpoint_path = save_checkpoint(
+                output_dir / "checkpoints" / "checkpoint_best_val_spatial_overlap.pt",
+                model=model,
+                optimizer=optimizer,
+                config=config,
+                args=args,
+                train_history=train_history,
+                test_metrics={
+                    "selection": "best_val_spatial_overlap",
+                    "epoch": int(epoch + 1),
+                    "val": val_metrics,
+                    "spatial_overlap_mean_positive": float(val_spatial_overlap),
+                },
+            )
+            best_checkpoints["best_val_spatial_overlap"] = {
+                "path": checkpoint_path,
+                "epoch": int(epoch + 1),
+                "spatial_overlap_mean_positive": float(val_spatial_overlap),
             }
         print(json.dumps(epoch_metrics, ensure_ascii=False, indent=2))
 

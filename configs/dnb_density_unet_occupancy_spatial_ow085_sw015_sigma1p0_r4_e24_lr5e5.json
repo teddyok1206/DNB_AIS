@@ -1,0 +1,130 @@
+{
+    "schema_version": 3,
+    "experiment_family": "dnb_density_heatmap",
+    "role": "main",
+    "status": "experiment_occupancy_weight_0p85_spatial_weight_0p15_sigma1p0_r4_e24_lr5e5",
+    "locked_on": "2026-06-08",
+    "locked_decision": "Remove count regression from the active path. Train ship O/X per patch plus positive-patch spatial distribution first; reintroduce count only after O/X and localization are reliable.",
+    "description": "Count-free PH-assisted U-Net variant on the fixed 25pct day split. Keeps sigma_pixels=1.0/radius_pixels=4 and tests a compromise loss with occupancy_weight=0.85, spatial_weight=0.15, lr=5e-5, and 24 epochs after the 0.9/0.1 run improved O/X F1 but reduced test spatial overlap.",
+    "device": "mps",
+    "sea_mask": {
+        "enabled": true,
+        "source": "kr_eez_plus_12nm",
+        "crop_to_bounds": true,
+        "segment_policy": "single_scene",
+        "write_masked_tif": true,
+        "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
+        "all_touched": true
+    },
+    "detector": {
+        "name": "DnbCandidateDetector",
+        "backend": "cripser",
+        "detection_threshold": 1.0,
+        "analysis_threshold": 0.25,
+        "threshold_reference": "median",
+        "smooth_sigma": 0.0,
+        "lifetime_limit_fraction": 1.001,
+        "area_limit": 0,
+        "min_nodes": 4,
+        "max_nodes": 2500,
+        "remove_edge": false,
+        "drop_nested": false
+    },
+    "ph_downsample": {
+        "factor": 4,
+        "reducer": "max",
+        "scope": "anchor_extraction_only"
+    },
+    "patching": {
+        "padding_pixels": 16,
+        "size_divisor": 16,
+        "sort_by": "node_count",
+        "parent_min_nodes": 32,
+        "parent_max_nodes": null,
+        "child_min_nodes": 4,
+        "child_max_nodes": null,
+        "max_children": null,
+        "seed_radius_pixels": 1,
+        "attention_distance_sigma": 4.0,
+        "attention_base_weight": 0.25,
+        "attention_ph_weight": 0.75,
+        "input_channels": [
+            "brightness",
+            "parent_ph_mask",
+            "child_ph_union_mask",
+            "ph_seed_map",
+            "ph_persistence_map",
+            "ph_soft_attention",
+            "anchor_lifetime_map"
+        ],
+        "loss_weight": "valid_crop only for O/X target construction; spatial loss is positive-patch normalized and optional sample terms use normalized log1p(anchor_lifetime)"
+    },
+    "partitioning": {
+        "enabled": true,
+        "fallback_tile_pixels": 96,
+        "halo_pixels": 16,
+        "anchor_padding_pixels": 16,
+        "min_owner_pixels": 1,
+        "min_fallback_owner_pixels": 1,
+        "policy": "PH anchors claim valid sea pixels first; fallback grid assigns every remaining valid sea pixel exactly once; halo pixels provide context only.",
+        "hierarchical_ph": {
+            "enabled": true,
+            "large_min_pixels": 65536,
+            "large_min_height": 384,
+            "large_min_width": 384,
+            "child_anchor_padding_pixels": 8,
+            "child_detection_threshold": 0.5,
+            "child_analysis_threshold": 0.25,
+            "child_threshold_reference": "median",
+            "child_smooth_sigma": 0.0,
+            "child_lifetime_limit": 0.0,
+            "child_lifetime_limit_fraction": 1.0005,
+            "child_area_limit": 0,
+            "child_min_nodes": 3,
+            "child_max_nodes": 2048,
+            "child_max_candidates_per_parent": 64,
+            "keep_large_parent": false,
+            "policy": "Large H0 parent anchors are not kept as oversized training patches. Local H0 PH is rerun inside each large parent with relaxed child detection; child anchors claim local peaks first and the existing fallback grid covers any remainder."
+        }
+    },
+    "target": {
+        "kernel": "gaussian",
+        "sigma_pixels": 1.0,
+        "radius_pixels": 4,
+        "renormalize_after_roi_mask": false,
+        "require_source_in_roi": false,
+        "per_ship_mass": 1.0
+    },
+    "model": {
+        "name": "OccupancySpatialUNet",
+        "in_channels": 7,
+        "out_channels": 1,
+        "base_channels": 32,
+        "depth": 4,
+        "occupancy_hidden_channels": 128,
+        "dropout": 0.0
+    },
+    "training": {
+        "loss": {
+            "name": "occupancy_spatial_loss",
+            "rationale": "The 0.9/0.1 run improved O/X F1 but reduced test spatial overlap. This compromise keeps sigma=1.0/r4 and lr=5e-5 while raising the KL spatial term to 0.15 so the model can recover localization without returning to the unstable 0.8/0.2 balance.",
+            "occupancy_weight": 0.85,
+            "spatial_weight": 0.15,
+            "occupancy_pos_weight": 1.0,
+            "spatial_loss": "kl",
+            "spatial_temperature": 1.0,
+            "min_target_count_for_positive": 1e-06,
+            "min_target_count_for_spatial": 1e-06,
+            "lifetime_weight_mode": "log1p_batch",
+            "lifetime_weight_strength": 0.5,
+            "lifetime_weight_min": 0.5,
+            "lifetime_weight_max": 1.75,
+            "lifetime_weight_normalize": true
+        },
+        "batch_size": 8,
+        "epochs": 24,
+        "lr": 5e-05,
+        "weight_decay": 0.0001,
+        "grad_clip_norm": 1.0
+    }
+}
