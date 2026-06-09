@@ -4,6 +4,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import random
 import subprocess
 import sys
@@ -117,6 +118,22 @@ def read_json(path: Path) -> dict[str, Any]:
 def stable_json_hash(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def ensure_writable_directory(path: Path, label: str) -> Path:
+    resolved = path.expanduser().resolve()
+    resolved.mkdir(parents=True, exist_ok=True)
+    probe = resolved / f".write_test_{os.getpid()}"
+    try:
+        probe.write_text("ok\n", encoding="utf-8")
+    except OSError as exc:
+        raise PermissionError(f"{label} is not writable: {resolved}") from exc
+    finally:
+        try:
+            probe.unlink()
+        except FileNotFoundError:
+            pass
+    return resolved
 
 
 def read_scene_split(path: Path) -> list[SceneSplitRecord]:
@@ -924,8 +941,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     seed_everything(int(args.seed))
     random.seed(int(args.seed))
-    output_dir = args.output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = ensure_writable_directory(args.output_dir, "--output-dir")
+    patch_cache_dir = args.patch_cache_dir.expanduser().resolve() if args.patch_cache_dir is not None else None
+    patch_cache_mode = str(args.patch_cache_mode)
+    if bool(args.cache_only) and patch_cache_dir is None:
+        raise ValueError("--cache-only requires --patch-cache-dir so the built patches have a persistent destination.")
+    if patch_cache_dir is not None and patch_cache_mode in {"write", "readwrite"}:
+        patch_cache_dir = ensure_writable_directory(patch_cache_dir, "--patch-cache-dir")
     config = read_json(args.config)
     config_hash = stable_json_hash(config)
     config_snapshot_path = output_dir / "config_snapshot.json"
@@ -954,10 +976,6 @@ def main(argv: list[str] | None = None) -> int:
     all_scene_results: list[SceneBuildResult] = []
     selected_by_split: dict[str, list[DensityPatch]] = {"train": [], "val": [], "test": []}
     cache_metadata_by_split: dict[str, Any] = {}
-    patch_cache_dir = args.patch_cache_dir.expanduser().resolve() if args.patch_cache_dir is not None else None
-    patch_cache_mode = str(args.patch_cache_mode)
-    if bool(args.cache_only) and patch_cache_dir is None:
-        raise ValueError("--cache-only requires --patch-cache-dir so the built patches have a persistent destination.")
     for split in ("train", "val", "test"):
         loaded_from_cache = False
         if patch_cache_dir is not None and patch_cache_mode in {"read", "readwrite"}:

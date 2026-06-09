@@ -34,6 +34,21 @@ RADIUS_TRUNCATE="${RADIUS_TRUNCATE:-3.0}"
 
 mkdir -p "${OUTPUT_DIR}" "${PATCH_CACHE_DIR}"
 
+check_writable_dir() {
+  local dir="$1"
+  local probe="${dir}/.write_test_$$"
+  if ! ( : > "${probe}" ) 2>/dev/null; then
+    printf '[error] directory is not writable: %s\n' "${dir}" >&2
+    exit 1
+  fi
+  rm -f "${probe}"
+}
+
+check_writable_dir "${OUTPUT_DIR}"
+if [[ "${PATCH_CACHE_MODE}" == "write" || "${PATCH_CACHE_MODE}" == "readwrite" ]]; then
+  check_writable_dir "${PATCH_CACHE_DIR}"
+fi
+
 printf '[run] output_dir=%s\n' "${OUTPUT_DIR}"
 printf '[run] log=%s\n' "${OUTPUT_DIR}/run.log"
 printf '[run] config=%s\n' "${CONFIG}"
