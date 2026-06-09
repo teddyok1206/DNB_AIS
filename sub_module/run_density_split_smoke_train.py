@@ -551,6 +551,11 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
         return output
     if "density" in output:
         return output["density"]
+    if "spatial_logits" not in output and ("occupancy_logit" in output or "occupancy_logits" in output):
+        valid_mask = (batch["valid_mask"] > 0).to(dtype=batch["valid_mask"].dtype)
+        valid_count = torch.clamp(valid_mask.flatten(1).sum(dim=1).reshape(-1, 1, 1, 1), min=1.0e-8)
+        logit = output["occupancy_logit"] if "occupancy_logit" in output else output["occupancy_logits"]
+        return valid_mask * torch.sigmoid(logit.reshape(-1, 1, 1, 1)) / valid_count
     if "spatial_logits" not in output:
         raise ValueError("Model output dict must contain density or spatial_logits")
     valid_mask = batch["valid_mask"]

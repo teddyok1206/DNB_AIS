@@ -316,6 +316,58 @@ class OccupancySpatialUNet(nn.Module):
         }
 
 
+class OccupancyOnlyUNet(nn.Module):
+    """Encoder-only U-Net family classifier for patch-level ship presence."""
+
+    def __init__(
+        self,
+        in_channels: int = 7,
+        out_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 4,
+        occupancy_hidden_channels: int | None = None,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        depth = max(int(depth), 2)
+        base_channels = int(base_channels)
+        channels = [base_channels * (2**idx) for idx in range(depth)]
+        self.config = {
+            "name": "OccupancyOnlyUNet",
+            "in_channels": int(in_channels),
+            "out_channels": int(out_channels),
+            "base_channels": base_channels,
+            "depth": depth,
+            "occupancy_hidden_channels": occupancy_hidden_channels,
+            "dropout": float(dropout),
+        }
+        self.encoder = nn.ModuleList()
+        self.encoder.append(ResidualConvBlock(int(in_channels), channels[0], dropout=float(dropout)))
+        for idx in range(1, depth):
+            self.encoder.append(ResidualConvBlock(channels[idx - 1], channels[idx], dropout=float(dropout)))
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        hidden = int(occupancy_hidden_channels or max(channels[-1] // 2, base_channels))
+        self.occupancy_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels[-1], hidden),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
+            nn.Linear(hidden, int(out_channels)),
+        )
+
+    def architecture_dict(self) -> dict[str, Any]:
+        return dict(self.config)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        for idx, block in enumerate(self.encoder):
+            if idx > 0:
+                x = self.pool(x)
+            x = block(x)
+        return {"occupancy_logit": self.occupancy_head(x)}
+
+
 class DualRadianceCountSpatialUNet(nn.Module):
     """Count-spatial U-Net with separate spatial and raw-radiance count inputs."""
 
@@ -442,6 +494,14 @@ def build_density_model(name: str, **kwargs: Any) -> nn.Module:
         "ship_presence_spatial",
     }:
         return OccupancySpatialUNet(**kwargs)
+    if normalized in {
+        "occupancy_only",
+        "occupancy_only_unet",
+        "occupancyonlyunet",
+        "ship_ox",
+        "ship_presence",
+    }:
+        return OccupancyOnlyUNet(**kwargs)
     if normalized in {"count_spatial", "count_spatial_unet", "countspatialdensityunet", "count_spatial_density_unet"}:
         return CountSpatialDensityUNet(**kwargs)
     if normalized in {
