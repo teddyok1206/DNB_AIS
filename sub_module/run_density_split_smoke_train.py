@@ -74,7 +74,7 @@ class SceneBuildResult:
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run split-level PH-assisted pixel-binary U-Net training.")
     parser.add_argument("--scene-split-csv", type=Path, default=DENSITY_OUTPUT_ROOT / "splits" / "ox_spatial_25pct_63_15_14_20260609_011421" / "scene_split.csv")
-    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json")
+    parser.add_argument("--config", type=Path, default=ROOT / "configs" / "dnb_density_unet_probability_field_recursive_ph_20260610.json")
     parser.add_argument("--output-dir", type=Path, default=DENSITY_OUTPUT_ROOT / "runs" / "density_split_smoke_train")
     parser.add_argument("--device", default="mps")
     parser.add_argument("--seed", type=int, default=20260529)
@@ -610,8 +610,9 @@ def run_batches(
                 occupancy_targets.extend(float(v) for v in occ_target.detach().cpu().tolist())
             if hasattr(loss_fn, "pixel_occupancy_from_output"):
                 pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(pred_output, batch)
+                target_threshold = float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5))
                 valid_bool = pixel_valid.detach() > 0
-                target_bool = (pixel_target.detach() > 0.5) & valid_bool
+                target_bool = (pixel_target.detach() >= target_threshold) & valid_bool
                 pred_bool = (pixel_prob.detach() >= 0.5) & valid_bool
                 pixel_tp += int((pred_bool & target_bool).sum().cpu())
                 pixel_fp += int((pred_bool & ~target_bool & valid_bool).sum().cpu())
@@ -718,6 +719,7 @@ def run_batches(
                 "pixel_fn": int(pixel_fn),
                 "pixel_tn": int(pixel_tn),
                 "pixel_threshold": 0.5,
+                "pixel_target_threshold": float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5)),
             }
         )
     return metrics
@@ -882,6 +884,7 @@ def save_inference_previews(
         input_channels=input_channels,
     )
     model.eval()
+    target_label = str(getattr(loss_fn, "target_display_name", "target probability field"))
     saved = 0
     with torch.no_grad():
         for batch in loader:
@@ -911,7 +914,7 @@ def save_inference_previews(
                     panels.append((f"input {channel_idx}: {channel_name}", arr, preview_cmap_for_name(channel_name), vmin, vmax))
                 panels.extend(
                     [
-                        ("target hard pixel occupancy", target_arr, "viridis", 0.0, density_vmax),
+                        (target_label, target_arr, "viridis", 0.0, density_vmax),
                         ("pred pixel probability", pred_arr, "viridis", 0.0, density_vmax),
                         ("abs prob error", error_arr, "inferno", 0.0, error_vmax),
                         ("valid owner mask", valid_arr, "gray", 0.0, 1.0),

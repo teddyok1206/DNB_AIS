@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+import math
 from typing import Any
 
 import torch
@@ -11,12 +12,17 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class PixelBinaryOccupancyLossConfig:
     name: str = "pixel_binary_occupancy_loss"
+    target_mode: str = "hard"
     pixel_weight: float = 0.85
     occupancy_weight: float = 0.15
     pixel_pos_weight: float = 50.0
     occupancy_pos_weight: float = 1.0
     dice_weight: float = 0.0
     min_raw_count_for_positive: float = 0.0
+    radius_probability_sigma_pixels: float = 4.0
+    radius_probability_radius_pixels: int = 0
+    radius_probability_truncate: float = 3.0
+    probability_target_threshold: float = 0.25
     lifetime_weight_mode: str = "none"
     lifetime_weight_strength: float = 0.0
     lifetime_weight_min: float = 0.25
@@ -76,25 +82,77 @@ def _occupancy_logit_from_output(output: dict[str, torch.Tensor]) -> torch.Tenso
 
 
 class PixelBinaryOccupancyLoss(nn.Module):
-    """Hard pixel-level O/X loss from raw AIS count pixels.
+    """Pixel probability-field loss from raw AIS seed pixels.
 
-    The smoothed density target can still be used by preview/diagnostic code,
-    but the supervised label here is raw_count > min_raw_count_for_positive.
+    In hard mode the target is exact raw_count > threshold. In probability
+    mode the exact AIS pixels are only seeds for a Gaussian 0..1 proximity
+    field; ship count mass is not spread or conserved as a density label.
     """
 
     def __init__(self, config: PixelBinaryOccupancyLossConfig | None = None) -> None:
         super().__init__()
         self.config = config or PixelBinaryOccupancyLossConfig()
         self.last_components: dict[str, float] = {}
+        self.pixel_metric_target_threshold = float(self.config.probability_target_threshold)
+        mode = str(self.config.target_mode).strip().lower()
+        self.target_display_name = (
+            "target radius probability field"
+            if mode in {"radius_probability", "probability_field", "gaussian_radius", "proximity"}
+            else "target hard pixel occupancy"
+        )
 
-    def pixel_target(self, batch: dict[str, Any]) -> torch.Tensor:
+    def source_pixel_target_from_batch(self, batch: dict[str, Any]) -> torch.Tensor:
         raw_count = batch.get("raw_count")
         if raw_count is None:
             raw_count = batch["target"]
         return (raw_count > float(self.config.min_raw_count_for_positive)).to(dtype=batch["valid_mask"].dtype) * batch["valid_mask"]
 
+    def _radius_probability_target(self, source: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:
+        cfg = self.config
+        sigma = float(cfg.radius_probability_sigma_pixels)
+        radius = int(cfg.radius_probability_radius_pixels)
+        if radius <= 0:
+            radius = int(math.ceil(max(sigma, 0.0) * max(float(cfg.radius_probability_truncate), 0.0)))
+        source = (source > 0.5).to(dtype=valid_mask.dtype) * valid_mask
+        if radius <= 0 or sigma <= 0.0:
+            return source
+        target = torch.zeros_like(source)
+        height = int(source.shape[-2])
+        width = int(source.shape[-1])
+        sigma = max(sigma, 1.0e-6)
+        for dy in range(-radius, radius + 1):
+            src_r0 = max(0, -dy)
+            src_r1 = height - max(0, dy)
+            dst_r0 = max(0, dy)
+            dst_r1 = height - max(0, -dy)
+            if src_r0 >= src_r1:
+                continue
+            for dx in range(-radius, radius + 1):
+                src_c0 = max(0, -dx)
+                src_c1 = width - max(0, dx)
+                dst_c0 = max(0, dx)
+                dst_c1 = width - max(0, -dx)
+                if src_c0 >= src_c1:
+                    continue
+                weight = math.exp(-0.5 * ((dy / sigma) ** 2 + (dx / sigma) ** 2))
+                if weight <= float(cfg.eps):
+                    continue
+                shifted = source[..., src_r0:src_r1, src_c0:src_c1] * source.new_tensor(float(weight))
+                current = target[..., dst_r0:dst_r1, dst_c0:dst_c1]
+                target[..., dst_r0:dst_r1, dst_c0:dst_c1] = torch.maximum(current, shifted)
+        return torch.clamp(target * valid_mask, min=0.0, max=1.0)
+
+    def pixel_target(self, batch: dict[str, Any]) -> torch.Tensor:
+        source = self.source_pixel_target_from_batch(batch)
+        mode = str(self.config.target_mode).strip().lower()
+        if mode in {"hard", "exact", "binary", "pixel_binary"}:
+            return source
+        if mode in {"radius_probability", "probability_field", "gaussian_radius", "proximity"}:
+            return self._radius_probability_target(source, batch["valid_mask"])
+        raise ValueError(f"Unsupported pixel target mode: {self.config.target_mode}")
+
     def target_count(self, batch: dict[str, Any]) -> torch.Tensor:
-        return self.pixel_target(batch).flatten(1).sum(dim=1)
+        return self.source_pixel_target_from_batch(batch).flatten(1).sum(dim=1)
 
     def occupancy_target(self, batch: dict[str, Any]) -> torch.Tensor:
         return (self.target_count(batch) > 0).to(dtype=batch["valid_mask"].dtype)
@@ -187,9 +245,10 @@ class PixelBinaryOccupancyLoss(nn.Module):
         total = float(cfg.pixel_weight) * pixel + float(cfg.occupancy_weight) * occupancy + float(cfg.dice_weight) * dice
         if bool(cfg.report_components):
             pred_prob = torch.sigmoid(pixel_logits)
-            positive_pixels = target > 0.5
             valid_pixels = valid_mask > 0
             valid_count = torch.clamp(valid_mask.sum().detach().cpu(), min=1.0)
+            source_target = self.source_pixel_target_from_batch(batch)
+            metric_positive = target >= float(cfg.probability_target_threshold)
             self.last_components = {
                 "loss_total": float(total.detach().cpu()),
                 "loss_pixel_bce": float(pixel.detach().cpu()),
@@ -198,8 +257,14 @@ class PixelBinaryOccupancyLoss(nn.Module):
                 "loss_weight_pixel": float(cfg.pixel_weight),
                 "loss_weight_patch_occupancy": float(cfg.occupancy_weight),
                 "loss_weight_dice": float(cfg.dice_weight),
+                "target_mode": 1.0 if str(cfg.target_mode).strip().lower() in {"radius_probability", "probability_field", "gaussian_radius", "proximity"} else 0.0,
+                "radius_probability_sigma_pixels": float(cfg.radius_probability_sigma_pixels),
+                "radius_probability_radius_pixels": float(cfg.radius_probability_radius_pixels),
+                "probability_target_threshold": float(cfg.probability_target_threshold),
                 "pixel_pos_weight": float(cfg.pixel_pos_weight),
-                "pixel_target_positive_fraction": float((positive_pixels & valid_pixels).to(dtype=target.dtype).sum().detach().cpu() / valid_count),
+                "pixel_target_positive_fraction": float((metric_positive & valid_pixels).to(dtype=target.dtype).sum().detach().cpu() / valid_count),
+                "source_pixel_positive_fraction": float((source_target > 0.5).to(dtype=target.dtype).sum().detach().cpu() / valid_count),
+                "probability_target_mean": float((target * valid_mask).sum().detach().cpu() / valid_count),
                 "pixel_pred_mean": float((pred_prob * valid_mask).sum().detach().cpu() / valid_count),
                 "patch_occupancy_target_mean": float(occupancy_target.detach().mean().cpu()),
                 "target_pixel_count_mean": float(self.target_count(batch).detach().mean().cpu()),
@@ -220,6 +285,10 @@ def build_density_loss(config: dict[str, Any] | PixelBinaryOccupancyLossConfig |
         normalized = str(config.get("name", "pixel_binary_occupancy_loss")).lower()
         if normalized in {
             "pixel_binary_occupancy_loss",
+            "radius_probability_occupancy_loss",
+            "probability_field_occupancy_loss",
+            "probability_field_occupancy",
+            "radius_probability_occupancy",
             "pixel_binary_occupancy",
             "pixel_occupancy_loss",
             "pixel_occupancy",

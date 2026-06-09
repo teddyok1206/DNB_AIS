@@ -235,9 +235,10 @@ def collect_pixel_scores(
             batch = move_density_batch_to_device(batch, device)
             output = model(batch["x"])
             pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(output, batch)
+            target_threshold = float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5))
             valid = (pixel_valid.detach() > 0).cpu().numpy().reshape(-1)
             probs.append(pixel_prob.detach().cpu().numpy().reshape(-1)[valid].astype(np.float32, copy=False))
-            targets.append((pixel_target.detach().cpu().numpy().reshape(-1)[valid] > 0.5))
+            targets.append((pixel_target.detach().cpu().numpy().reshape(-1)[valid] >= target_threshold))
     if not probs:
         return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
     return np.concatenate(probs).astype(np.float64, copy=False), np.concatenate(targets).astype(bool, copy=False)
@@ -395,8 +396,12 @@ def collect_radius_scores(
             batch = move_density_batch_to_device(batch, device)
             output = model(batch["x"])
             pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(output, batch)
+            if hasattr(loss_fn, "source_pixel_target_from_batch"):
+                radius_source_target = loss_fn.source_pixel_target_from_batch(batch)
+            else:
+                radius_source_target = pixel_target
             probs_np = pixel_prob.detach().cpu().numpy()
-            targets_np = pixel_target.detach().cpu().numpy()
+            targets_np = radius_source_target.detach().cpu().numpy()
             valid_np = pixel_valid.detach().cpu().numpy()
             for idx, meta in enumerate(batch["metadata"]):
                 height, width = [int(v) for v in meta["shape"]]

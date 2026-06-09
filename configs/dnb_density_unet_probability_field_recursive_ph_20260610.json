@@ -1,0 +1,177 @@
+{
+  "schema_version": 6,
+  "experiment_family": "dnb_density_probability_field",
+  "role": "main",
+  "status": "experiment_probability_field_recursive_ph_20260610",
+  "locked_on": "2026-06-10",
+  "locked_decision": "Use PH-guided recursive scene partitioning, but abandon exact pixel-hit supervision. Raw AIS pixels are only seeds for a Gaussian 0..1 proximity probability field target.",
+  "description": "PH-assisted U-Net trained to emit a radius-tolerant ship-proximity probability field from brightness plus minimal PH structure channels. Exact AIS pixels are not treated as the primary supervised target.",
+  "device": "mps",
+  "primary_target": {
+    "name": "radius_probability_field",
+    "definition": "source_pixel = raw_count > 0; target_probability = exp(-distance(source_pixel)^2 / (2 * sigma_pixels^2)), truncated to radius_pixels and masked by valid owner sea pixels",
+    "prediction": "pixel_logits -> sigmoid(pixel_logits) as a 0..1 proximity probability field",
+    "field_seed": "raw AIS count pixels remain exact seed points; the learned target is probability of proximity, not count density and not exact pixel identity",
+    "main_metrics": [
+      "pixel_precision",
+      "pixel_recall",
+      "pixel_f1",
+      "pixel_iou",
+      "pixel_brier",
+      "radius_probability.average_precision",
+      "soft_target_explained",
+      "soft_pred_matched"
+    ],
+    "not_primary": [
+      "exact_raw_pixel_hit",
+      "sum_preserving_density_count"
+    ]
+  },
+  "auxiliary_options": {
+    "gt_smoothing": {
+      "enabled_for_main_target": true,
+      "target_type": "radius_probability_field",
+      "rationale": "The target is intentionally a proximity probability field because DNB pixels are coarse relative to AIS point locations. This is not count-mass smoothing."
+    },
+    "patch_occupancy_auxiliary": {
+      "enabled": true,
+      "loss_weight": 0.1,
+      "rationale": "Patch O/X is retained only as a weak regularizer so the model notices empty patches; it is not the reporting target."
+    },
+    "dice_auxiliary": {
+      "enabled": false,
+      "loss_weight": 0.0,
+      "rationale": "Keep the first probability-field run simple. Dice can be enabled later if weighted BCE collapses to all-background."
+    },
+    "spatial_softmax_overlap": {
+      "enabled": false,
+      "rationale": "The new pixel head is independent sigmoid, not a per-patch probability distribution softmax."
+    }
+  },
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
+    "all_touched": true
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 0,
+    "min_nodes": 4,
+    "max_nodes": 2500,
+    "remove_edge": false,
+    "drop_nested": false
+  },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
+  "patching": {
+    "padding_pixels": 12,
+    "size_divisor": 16,
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "input_channels": [
+      "brightness",
+      "ph_persistence_map",
+      "ph_seed_map"
+    ],
+    "input_channel_policy": "Only physically interpretable observation/topology hints are model inputs. Parent/child PH masks, soft attention, and anchor lifetime are not fed to the U-Net.",
+    "supervision_mask": "valid owner mask only. Raw AIS pixels seed a Gaussian probability field; exact pixel-hit supervision is not used as the primary objective."
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 64,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 12,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first. Large PH anchors are recursively subdivided until target size or max depth; fallback grid assigns remaining valid sea pixels exactly once.",
+    "hierarchical_ph": {
+      "enabled": true,
+      "large_min_pixels": 16384,
+      "large_min_height": 160,
+      "large_min_width": 160,
+      "child_anchor_padding_pixels": 6,
+      "child_detection_threshold": 0.5,
+      "child_analysis_threshold": 0.25,
+      "child_threshold_reference": "median",
+      "child_smooth_sigma": 0.0,
+      "child_lifetime_limit": 0.0,
+      "child_lifetime_limit_fraction": 1.0005,
+      "child_area_limit": 0,
+      "child_min_nodes": 3,
+      "child_max_nodes": 2048,
+      "child_max_candidates_per_parent": 96,
+      "keep_large_parent": false,
+      "recursive": {
+        "enabled": true,
+        "max_depth": 3,
+        "target_max_height": 128,
+        "target_max_width": 128,
+        "target_max_pixels": 8192
+      },
+      "policy": "When recursive is enabled, child PH clusters that still exceed the target size are not emitted as training patches; their descendants or fallback grid cover the area."
+    }
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.0,
+    "radius_pixels": 4,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
+    "per_ship_mass": 1.0,
+    "role": "legacy_sum_preserving_density_for_visualization_compatibility_only; probability-field loss builds its target from raw_count seeds."
+  },
+  "model": {
+    "name": "PixelBinaryOccupancyUNet",
+    "in_channels": 3,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "occupancy_hidden_channels": 128,
+    "dropout": 0.05
+  },
+  "training": {
+    "loss": {
+      "name": "radius_probability_occupancy_loss",
+      "target_mode": "radius_probability",
+      "rationale": "Train sigmoid pixel logits against a Gaussian proximity probability field seeded by raw_count > 0. Exact pixel-hit BCE is intentionally abandoned.",
+      "pixel_weight": 0.9,
+      "occupancy_weight": 0.1,
+      "pixel_pos_weight": 8.0,
+      "occupancy_pos_weight": 1.0,
+      "dice_weight": 0.0,
+      "min_raw_count_for_positive": 0.0,
+      "radius_probability_sigma_pixels": 4.0,
+      "radius_probability_radius_pixels": 12,
+      "radius_probability_truncate": 3.0,
+      "probability_target_threshold": 0.25,
+      "lifetime_weight_mode": "none",
+      "lifetime_weight_strength": 0.0,
+      "lifetime_weight_min": 0.5,
+      "lifetime_weight_max": 1.75,
+      "lifetime_weight_normalize": true
+    },
+    "batch_size": 8,
+    "epochs": 24,
+    "lr": 5e-05,
+    "weight_decay": 0.0003,
+    "grad_clip_norm": 1.0
+  }
+}

@@ -9,16 +9,17 @@ The midterm report was written around a DRUID + GAT direction. That path is hist
 The active final-report method is now:
 
 ```text
-PH-assisted recursive exact-cover patching + PixelBinaryOccupancyUNet
+PH-assisted recursive exact-cover patching + PixelBinaryOccupancyUNet probability field
 ```
 
-The main label is hard pixel ship presence from AIS-derived raw count pixels:
+The main label is a radius-tolerant probability field seeded by AIS-derived raw count pixels:
 
 ```text
-Y_pixel = 1[raw_count > 0]
+Y_seed = 1[raw_count > 0]
+Y_field = exp(-0.5 * distance_to_nearest(Y_seed)^2 / sigma_pixels^2)
 ```
 
-Patch-level O/X, smoothed density maps, brightness baselines, and count regression are secondary or archived material unless explicitly revived.
+Exact AIS-pixel hit detection, smoothed count-density maps, brightness baselines, and count regression are secondary or archived material unless explicitly revived.
 
 ## Active Method Summary
 
@@ -29,11 +30,11 @@ preprocessing: arctan-encoded DNB brightness, KR EEZ + 12 nm sea mask, day-level
 structure prior: H0 persistent-homology anchors from encoded brightness.
 partitioning: PH anchors first, recursive PH rerun for oversized anchors, fallback tiles for exact valid-sea coverage.
 model: PixelBinaryOccupancyUNet.
-output: independent per-pixel ship-presence probability.
-training target: hard valid-pixel O/X from raw_count > 0.
+output: independent per-pixel ship-proximity probability.
+training target: Gaussian proximity probability field seeded by raw_count > 0.
 ```
 
-Current input channels from `configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json`:
+Current input channels from `configs/dnb_density_unet_probability_field_recursive_ph_20260610.json`:
 
 ```text
 0 brightness
@@ -47,9 +48,10 @@ Parent/child PH masks are computed only transiently during proposal/target const
 
 ```text
 encoded = (2 / pi) * arctan(radiance / 1e-9)
-Y_pixel = 1[raw_count_pixel > 0] * valid_owner_mask
+Y_seed = 1[raw_count_pixel > 0] * valid_owner_mask
+Y_field = exp(-0.5 * distance_to_nearest(Y_seed)^2 / sigma_pixels^2) * valid_owner_mask
 P_pixel = sigmoid(pixel_logits) * valid_owner_mask
-O_target = 1[sum(Y_pixel) > 0]
+O_target = 1[sum(Y_seed) > 0]
 P_patch = sigmoid(occupancy_logit)
 ```
 
@@ -60,14 +62,14 @@ P_radius = masked_gaussian_smooth(P_pixel, sigma)
 Y_radius = exp(-0.5 * distance_to_nearest_positive_AIS_pixel^2 / sigma^2)
 ```
 
-This is diagnostic only. It separates exact-pixel failure from near-miss localization and should be reported separately from the primary hard pixel metrics.
+This remains a post-hoc tolerance sweep. It should be reported as probability-field behavior, not as integer-count accuracy.
 
 Main loss:
 
 ```text
-L = lambda_pixel * BCEWithLogits(pixel_logits, Y_pixel)
+L = lambda_pixel * BCEWithLogits(pixel_logits, Y_field)
   + lambda_patch * BCEWithLogits(occupancy_logit, O_target)
-  + lambda_dice * Dice(pixel_logits, Y_pixel)   # currently disabled
+  + lambda_dice * Dice(pixel_logits, Y_field)   # currently disabled
 ```
 
 Current config:
@@ -76,14 +78,18 @@ Current config:
 lambda_pixel = 0.9
 lambda_patch = 0.1
 lambda_dice = 0.0
-pixel_pos_weight = 256.0
+pixel_pos_weight = 8.0
+sigma_pixels = 4.0
+radius_pixels = 12
+field_target_threshold = 0.25
 ```
 
-GT smoothing note:
+Target note:
 
 ```text
-DNB brightness is physically diffuse, so smoothed GT remains acceptable for visualization panels.
-It is not the supervised label. AIS-derived identity should not be spread into neighboring pixels for the main O/X objective.
+DNB brightness is physically diffuse and AIS-to-DNB pixel alignment is brittle.
+AIS labels remain exact seeds, but the supervised target is a proximity probability field.
+This is not count-mass smoothing and should not be interpreted as integer vessel density.
 ```
 
 ## Proposed Final Report Outline
@@ -96,8 +102,8 @@ Include:
 VIIRS DNB low-resolution nighttime vessel-light overlap
 AIS-derived supervision
 PH-assisted recursive exact-cover patch construction
-PixelBinaryOccupancyUNet per-pixel ship-presence mapping
-final train/validation/test pixel metrics
+PixelBinaryOccupancyUNet per-pixel ship-proximity probability mapping
+final train/validation/test field metrics
 ```
 
 ### 2. Introduction
@@ -142,7 +148,7 @@ Subsections:
 4.5 Recursive PH subdivision for oversized anchors
 4.6 PH feature-channel construction
 4.7 PixelBinaryOccupancyUNet architecture
-4.8 Hard pixel O/X loss and auxiliary patch O/X head
+4.8 Probability-field loss and auxiliary patch O/X head
 4.9 Patch inference and full-scene merge
 4.10 Deferred count head extension
 ```
@@ -153,10 +159,10 @@ Report:
 
 ```text
 hardware: Apple Silicon Mac, MPS backend
-config: configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json
+config: configs/dnb_density_unet_probability_field_recursive_ph_20260610.json
 split: outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv
-checkpoint policy: last, best validation loss, best validation pixel F1
-threshold policy: fixed 0.5 plus validation-calibrated threshold for pixel F1
+checkpoint policy: last, best validation loss, best validation field F1
+threshold policy: fixed 0.5 plus validation-calibrated threshold for field F1
 ```
 
 Primary metrics:
@@ -167,6 +173,9 @@ pixel_recall
 pixel_f1
 pixel_iou
 pixel_brier
+radius_probability average precision
+soft target explained
+soft prediction matched
 ```
 
 Secondary diagnostics:
@@ -186,7 +195,7 @@ Figure 1: active pipeline diagram
 Figure 2: VIIRS DNB scene + KR sea mask
 Figure 3: PH parent / recursive child / fallback partition visualization
 Figure 4: patch input channels with PH features
-Figure 5: target pixel O/X, predicted probability, thresholded prediction, error map
+Figure 5: target probability field, predicted probability field, thresholded field, error map
 Figure 6: train/validation loss and pixel F1 curves
 Figure 7: representative success/failure test patches or scenes
 ```
@@ -211,8 +220,8 @@ Do not present the retired occupancy/spatial-softmax model as the active method.
 Discuss:
 
 ```text
-why hard pixel O/X is better posed than direct count at current resolution
-why GT smoothing is visualization-only, not label spreading
+why probability fields are better posed than exact AIS-pixel hits at current resolution
+why this target is proximity probability, not count-density smoothing
 why PH is a partition/input prior rather than a label censor
 how recursive PH addresses oversized patches
 limitations from AIS supervision, DNB blooming, cloud/bright artifacts, and sparse positives
@@ -224,8 +233,8 @@ what would justify reintroducing count prediction later
 State:
 
 ```text
-The completed pipeline maps DNB and PH-derived features to per-pixel vessel-presence probability.
-It is evaluated as pixel O/X detection and localization, not as final integer vessel counting.
+The completed pipeline maps DNB and PH-derived features to a per-pixel vessel-proximity probability field.
+It is evaluated as probability-field localization, not as exact AIS-pixel detection or final integer vessel counting.
 ```
 
 ## Citation File
@@ -235,9 +244,9 @@ Use `docs/FINAL_REPORT_CITATIONS_IEEE.md`. Update that file before changing refe
 ## Next Report-Readiness Tasks
 
 ```text
-1. finish the active pixel-binary recursive PH experiment
-2. freeze best_val_pixel_f1 test metrics with fixed and calibrated thresholds
-3. generate qualitative target/probability/error panels
+1. finish the active probability-field recursive PH experiment
+2. freeze best validation field-F1 test metrics with fixed and calibrated thresholds
+3. generate qualitative target-field/probability/error panels
 4. prepare final metric tables
 5. draft the final LaTeX report from this outline
 ```
