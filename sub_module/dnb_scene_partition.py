@@ -599,6 +599,8 @@ def build_partitioned_density_patches(
         raw_crop = np.asarray(gt[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32) * owner_mask
         parent_mask = _union_mask_for_clusters(parent_in_crop, partition.crop_rc, crop_shape) * sea_crop
         child_union_mask = _union_mask_for_clusters(child_in_crop, partition.crop_rc, crop_shape) * sea_crop
+        parent_pixels = int(parent_mask.sum())
+        child_pixels = int(child_union_mask.sum())
         seed_map = _seed_map_for_clusters(
             ph_sources,
             partition.crop_rc,
@@ -606,7 +608,6 @@ def build_partitioned_density_patches(
             radius_pixels=int(patch_config.seed_radius_pixels),
         ) * sea_crop
         persistence_map = _persistence_map_for_clusters(ph_sources, partition.crop_rc, crop_shape) * sea_crop
-        loss_weight = owner_mask.astype(np.float32, copy=False)
         target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config, domain_mask=owner_mask)
 
         patches.append(
@@ -616,14 +617,13 @@ def build_partitioned_density_patches(
                 bbox_rc=tuple(int(v) for v in partition.core_rc),
                 crop_rc=tuple(int(v) for v in partition.crop_rc),
                 image=image_crop.astype(np.float32, copy=False),
-                parent_mask=parent_mask.astype(np.float32, copy=False),
-                child_union_mask=child_union_mask.astype(np.float32, copy=False),
                 seed_map=seed_map.astype(np.float32, copy=False),
                 persistence_map=persistence_map.astype(np.float32, copy=False),
-                loss_weight=loss_weight.astype(np.float32, copy=False),
                 valid_mask=owner_mask.astype(np.float32, copy=False),
                 target_density=target.astype(np.float32, copy=False),
                 raw_count=raw_crop.astype(np.float32, copy=False),
+                parent_pixel_count=parent_pixels,
+                child_pixel_count=child_pixels,
                 child_ids=[int(cluster.cluster_id) for cluster in child_in_crop],
                 partition_id=int(partition.partition_id),
                 partition_kind=str(partition.kind),

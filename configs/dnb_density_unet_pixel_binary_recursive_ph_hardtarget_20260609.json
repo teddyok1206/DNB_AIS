@@ -90,8 +90,8 @@
       "ph_persistence_map",
       "ph_seed_map"
     ],
-    "input_channel_policy": "Only physically interpretable observation/topology hints are model inputs. Parent/child PH masks, soft attention, and anchor lifetime are proposal metadata only and are not fed to the U-Net.",
-    "loss_weight": "valid owner mask only. Pixel binary loss uses raw_count > 0 and does not consume the smoothed target as label."
+    "input_channel_policy": "Only physically interpretable observation/topology hints are model inputs. Parent/child PH masks, soft attention, and anchor lifetime are not fed to the U-Net.",
+    "supervision_mask": "valid owner mask only. Pixel binary loss uses raw_count > 0 and does not consume the smoothed target as label."
   },
   "partitioning": {
     "enabled": true,

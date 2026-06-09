@@ -8,7 +8,7 @@ ph_persistence_map
 ph_seed_map
 ```
 
-`parent_ph_mask`, `child_ph_union_mask`, `ph_soft_attention`, `anchor_lifetime_map`은 모델 입력에서 제거했습니다. PH는 여전히 proposal/hierarchy 생성에 쓰지만, 넓은 binary/attention mask를 U-Net에 직접 주지 않습니다.
+`parent_ph_mask`, `child_ph_union_mask`, `ph_soft_attention`, `anchor_lifetime_map`은 모델 입력에서 제거했습니다. PH parent/child mask는 proposal/target 생성 중에만 일시적으로 계산하고 patch/batch 메모리에 저장하지 않습니다. 넓은 binary/attention mask를 U-Net에 직접 주지 않습니다.
 
 핵심은 이겁니다.
 
@@ -68,10 +68,10 @@ renormalize_after_roi_mask = False
 Gaussian-smoothed density target은 legacy visualization에만 남깁니다. PH는 target censoring에 쓰면 안 됩니다.
 
 **loss mask 정책**
-hard pixel target은 valid owner mask 안에서만 학습합니다. PH는 patch를 만들지만 loss weight를 바꾸지 않습니다.
+hard pixel target은 valid owner mask 안에서만 학습합니다. PH는 patch를 만들지만 loss를 재가중하지 않습니다.
 
 ```text
-loss_weight = valid_owner_mask
+supervision_mask = valid_owner_mask
 ```
 
 **계층적 PH crop 방식**
@@ -139,7 +139,6 @@ The current implementation direction is U-Net only: PH hierarchy channels provid
 
 ```text
 image
-roi_mask
 target_density
 raw_count
 ```

@@ -31,7 +31,12 @@ from .dnb_density_common import (
 )
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
-from .dnb_density_patch_pickle_cache import load_patch_split_cache, save_patch_split_cache, split_cache_path
+from .dnb_density_patch_pickle_cache import (
+    SCHEMA_VERSION as PATCH_CACHE_SCHEMA_VERSION,
+    load_patch_split_cache,
+    save_patch_split_cache,
+    split_cache_path,
+)
 from .dnb_density_preview import preview_cmap_for_name, preview_limits_for_name, robust_vmax, save_panel_grid
 from .dnb_pipeline_core import GroundTruthResolver, SceneRaster
 from .dnb_project_paths import DENSITY_OUTPUT_ROOT, ROOT, STEP3
@@ -1007,7 +1012,7 @@ def main(argv: list[str] | None = None) -> int:
                 metadata=cache_metadata,
             )
             cache_metadata_by_split[split] = {
-                "schema_version": 1,
+                "schema_version": PATCH_CACHE_SCHEMA_VERSION,
                 "kind": "density_patch_pickle_cache",
                 "split": split,
                 "patch_count": int(len(selected_by_split[split])),

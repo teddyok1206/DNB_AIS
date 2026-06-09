@@ -6,10 +6,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .dnb_density_common import DensityPatch
+from .dnb_density_common import DensityPatch, compact_density_patch
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 
 
 def split_cache_path(cache_dir: Path, split: str) -> Path:
@@ -33,7 +34,7 @@ def save_patch_split_cache(
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "split": str(split),
         "patch_count": int(len(patches)),
-        "patches": patches,
+        "patches": [compact_density_patch(patch) for patch in patches],
         "metadata": dict(metadata or {}),
     }
     with tmp_path.open("wb") as handle:
@@ -55,9 +56,11 @@ def load_patch_split_cache(cache_dir: Path, split: str) -> tuple[list[DensityPat
         payload = pickle.load(handle)
     if not isinstance(payload, dict):
         raise ValueError(f"Invalid density patch cache payload: {path}")
-    if int(payload.get("schema_version", -1)) != SCHEMA_VERSION:
+    schema_version = int(payload.get("schema_version", -1))
+    if schema_version not in SUPPORTED_SCHEMA_VERSIONS:
         raise ValueError(f"Unsupported density patch cache schema: {payload.get('schema_version')} in {path}")
     patches = payload.get("patches")
     if not isinstance(patches, list):
         raise ValueError(f"Density patch cache does not contain a patch list: {path}")
-    return patches, {key: value for key, value in payload.items() if key != "patches"}
+    compacted = [compact_density_patch(patch) for patch in patches]
+    return compacted, {key: value for key, value in payload.items() if key != "patches"}

@@ -40,7 +40,7 @@ ph_persistence_map
 ph_seed_map
 ```
 
-Parent PH masks, child PH union masks, soft attention maps, and anchor lifetime maps are not model inputs. They are too easy for the network to use as broad proposal shortcuts and are less physically direct than brightness, persistence, and seed evidence.
+Parent PH masks and child PH union masks are not model inputs and are not stored in patch/batch memory after target construction. Soft attention maps and anchor lifetime maps are removed from the active path. These features are too easy for the network to use as broad proposal shortcuts and are less physically direct than brightness, persistence, and seed evidence.
 
 6. Auxiliary options are separated
 
@@ -206,3 +206,5 @@ Rationale:
 - Anchor lifetime is mostly patch metadata and does not provide pixel-local physical evidence.
 
 PH remains central to recursive proposal generation and exact-cover patch construction. It is no longer exposed to the U-Net as broad binary masks or soft-attention fields.
+
+Implementation note: parent/child PH masks are now transient arrays only. New patch caches store the compact patch schema; older schema caches are compacted immediately after load.

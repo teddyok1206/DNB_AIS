@@ -41,7 +41,7 @@ Current input channels from `configs/dnb_density_unet_pixel_binary_recursive_ph_
 2 ph_seed_map
 ```
 
-Parent/child PH masks, soft attention, and anchor lifetime are retained only as proposal-building metadata when needed. They are not U-Net input channels.
+Parent/child PH masks are computed only transiently during proposal/target construction. Soft attention and anchor lifetime maps are removed from the active path. None of these are U-Net input channels or batch tensors.
 
 ## Core Equations
 

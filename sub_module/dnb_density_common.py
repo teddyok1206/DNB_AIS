@@ -62,14 +62,13 @@ class DensityPatch:
     bbox_rc: tuple[int, int, int, int]
     crop_rc: tuple[int, int, int, int]
     image: np.ndarray
-    parent_mask: np.ndarray
-    child_union_mask: np.ndarray
     seed_map: np.ndarray
     persistence_map: np.ndarray
-    loss_weight: np.ndarray
     valid_mask: np.ndarray
     target_density: np.ndarray
     raw_count: np.ndarray
+    parent_pixel_count: int = 0
+    child_pixel_count: int = 0
     child_ids: list[int] = field(default_factory=list)
     partition_id: int | None = None
     partition_kind: str = "ph_proposal"
@@ -80,17 +79,12 @@ class DensityPatch:
         return self.image.shape
 
     @property
-    def roi_mask(self) -> np.ndarray:
-        # Backward-compatible alias: the parent PH region is the rigid ROI proposal.
-        return self.parent_mask
-
-    @property
     def roi_pixels(self) -> int:
-        return int(self.parent_mask.sum())
+        return int(self.parent_pixel_count)
 
     @property
     def child_pixels(self) -> int:
-        return int(self.child_union_mask.sum())
+        return int(self.child_pixel_count)
 
     @property
     def raw_count_sum(self) -> float:
@@ -101,12 +95,23 @@ class DensityPatch:
         return float(self.target_density.sum())
 
     @property
-    def loss_weight_sum(self) -> float:
-        return float(self.loss_weight.sum())
-
-    @property
     def valid_pixels(self) -> int:
         return int((self.valid_mask > 0).sum())
+
+
+def compact_density_patch(patch: DensityPatch) -> DensityPatch:
+    """Drop retired dense arrays that can survive in older pickle caches."""
+
+    if not hasattr(patch, "parent_pixel_count"):
+        parent_mask = getattr(patch, "parent_mask", None)
+        patch.parent_pixel_count = int(np.asarray(parent_mask, dtype=np.float32).sum()) if parent_mask is not None else 0
+    if not hasattr(patch, "child_pixel_count"):
+        child_union_mask = getattr(patch, "child_union_mask", None)
+        patch.child_pixel_count = int(np.asarray(child_union_mask, dtype=np.float32).sum()) if child_union_mask is not None else 0
+    for retired_attr in ("parent_mask", "child_union_mask", "soft_attention", "loss_weight"):
+        if hasattr(patch, retired_attr):
+            delattr(patch, retired_attr)
+    return patch
 
 
 def _round_up(value: int, divisor: int) -> int:
@@ -371,7 +376,8 @@ def build_density_patches(
         image_crop = np.asarray(scene.image[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32) * valid_crop
         raw_crop = np.asarray(gt[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32) * valid_crop
         parent_mask = _mask_for_cluster(parent, crop_rc) * valid_crop
-        if int(parent_mask.sum()) < int(patch_config.min_roi_pixels):
+        parent_pixels = int(parent_mask.sum())
+        if parent_pixels < int(patch_config.min_roi_pixels):
             continue
 
         children = _children_for_parent(parent, child_clusters, patch_config)
@@ -380,6 +386,7 @@ def build_density_patches(
             child_union_mask = np.maximum.reduce(child_masks).astype(np.float32, copy=False)
         else:
             child_union_mask = np.zeros_like(parent_mask, dtype=np.float32)
+        child_pixels = int(child_union_mask.sum())
 
         seed_sources = children if children else [parent]
         persistence_sources = children if children else [parent]
@@ -390,7 +397,6 @@ def build_density_patches(
             radius_pixels=int(patch_config.seed_radius_pixels),
         ) * valid_crop
         persistence_map = _persistence_map_for_clusters(persistence_sources, crop_rc, image_crop.shape) * valid_crop
-        loss_weight = valid_crop.astype(np.float32, copy=False)
         target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config, domain_mask=valid_crop)
         patches.append(
             DensityPatch(
@@ -399,14 +405,13 @@ def build_density_patches(
                 bbox_rc=tuple(int(v) for v in parent.bbox_rc),
                 crop_rc=tuple(int(v) for v in crop_rc),
                 image=image_crop,
-                parent_mask=parent_mask.astype(np.float32, copy=False),
-                child_union_mask=child_union_mask.astype(np.float32, copy=False),
                 seed_map=seed_map.astype(np.float32, copy=False),
                 persistence_map=persistence_map.astype(np.float32, copy=False),
-                loss_weight=loss_weight.astype(np.float32, copy=False),
                 valid_mask=valid_crop.astype(np.float32, copy=False),
                 target_density=target.astype(np.float32, copy=False),
                 raw_count=raw_crop.astype(np.float32, copy=False),
+                parent_pixel_count=parent_pixels,
+                child_pixel_count=child_pixels,
                 child_ids=[int(child.cluster_id) for child in children],
             )
         )
@@ -415,7 +420,7 @@ def build_density_patches(
 
 class DensityPatchDataset(Dataset):
     def __init__(self, patches: Iterable[DensityPatch]) -> None:
-        self.patches = list(patches)
+        self.patches = [compact_density_patch(patch) for patch in patches]
 
     def __len__(self) -> int:
         return len(self.patches)
@@ -441,28 +446,16 @@ def density_patch_collate(
 
     x = torch.zeros((batch_size, len(channel_names), max_h, max_w), dtype=torch.float32)
     target = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    parent_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    child_union_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    seed_map = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    persistence_map = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    loss_weight = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     valid_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     raw_count = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    lifetime = torch.zeros((batch_size,), dtype=torch.float32)
 
     metadata: list[dict[str, Any]] = []
     for idx, patch in enumerate(batch):
+        patch = compact_density_patch(patch)
         h, w = patch.image.shape
-        image = torch.from_numpy(np.asarray(patch.image, dtype=np.float32))
-        parent = torch.from_numpy(np.asarray(patch.parent_mask, dtype=np.float32))
-        child = torch.from_numpy(np.asarray(patch.child_union_mask, dtype=np.float32))
-        seed = torch.from_numpy(np.asarray(patch.seed_map, dtype=np.float32))
-        persistence = torch.from_numpy(np.asarray(patch.persistence_map, dtype=np.float32))
-        weight = torch.from_numpy(np.asarray(patch.loss_weight, dtype=np.float32))
         valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
         raw = torch.from_numpy(np.asarray(patch.raw_count, dtype=np.float32))
-        lifetime[idx] = float(patch.lifetime)
 
         for channel_idx, channel_name in enumerate(channel_names):
             channel_arr = _channel_array_for_patch(patch, str(channel_name))
@@ -470,11 +463,6 @@ def density_patch_collate(
                 raise ValueError(f"channel {channel_name} shape mismatch: {channel_arr.shape} != {patch.shape}")
             x[idx, channel_idx, :h, :w] = torch.from_numpy(np.asarray(channel_arr, dtype=np.float32))
         target[idx, 0, :h, :w] = y
-        parent_mask[idx, 0, :h, :w] = parent
-        child_union_mask[idx, 0, :h, :w] = child
-        seed_map[idx, 0, :h, :w] = seed
-        persistence_map[idx, 0, :h, :w] = persistence
-        loss_weight[idx, 0, :h, :w] = weight
         valid_mask[idx, 0, :h, :w] = valid
         raw_count[idx, 0, :h, :w] = raw
         metadata.append(
@@ -493,7 +481,6 @@ def density_patch_collate(
                 "anchor_cluster_id": None if patch.anchor_cluster_id is None else int(patch.anchor_cluster_id),
                 "raw_count_sum": float(patch.raw_count_sum),
                 "target_sum": float(patch.target_sum),
-                "loss_weight_sum": float(patch.loss_weight_sum),
                 "valid_pixels": int(patch.valid_pixels),
                 "input_channels": [str(name) for name in channel_names],
             }
@@ -503,15 +490,8 @@ def density_patch_collate(
         "x": x,
         "input_channels": [str(name) for name in channel_names],
         "target": target,
-        "parent_mask": parent_mask,
-        "roi_mask": parent_mask,
-        "child_union_mask": child_union_mask,
-        "seed_map": seed_map,
-        "persistence_map": persistence_map,
-        "loss_weight": loss_weight,
         "valid_mask": valid_mask,
         "raw_count": raw_count,
-        "lifetime": lifetime,
         "metadata": metadata,
     }
 
@@ -522,15 +502,8 @@ def move_density_batch_to_device(batch: dict[str, Any], device: torch.device | s
     tensor_keys = [
         "x",
         "target",
-        "parent_mask",
-        "roi_mask",
-        "child_union_mask",
-        "seed_map",
-        "persistence_map",
-        "loss_weight",
         "valid_mask",
         "raw_count",
-        "lifetime",
     ]
     for key in tensor_keys:
         moved[key] = batch[key].to(device)
@@ -556,7 +529,6 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
     child_counts = np.array([len(patch.child_ids) for patch in patch_list], dtype=np.int64) if patch_list else np.array([], dtype=np.int64)
     raw_sums = np.array([patch.raw_count_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     target_sums = np.array([patch.target_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
-    loss_weight_sums = np.array([patch.loss_weight_sum for patch in patch_list], dtype=np.float32) if patch_list else np.array([], dtype=np.float32)
     valid_pixels = np.array([patch.valid_pixels for patch in patch_list], dtype=np.int64) if patch_list else np.array([], dtype=np.int64)
     partition_kinds = [str(patch.partition_kind) for patch in patch_list]
     return {
@@ -574,7 +546,6 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
         "patches_with_target_gt": int((target_sums > 0).sum()) if target_sums.size else 0,
         "raw_count_sum": float(raw_sums.sum()) if raw_sums.size else 0.0,
         "target_density_sum": float(target_sums.sum()) if target_sums.size else 0.0,
-        "loss_weight_sum": float(loss_weight_sums.sum()) if loss_weight_sums.size else 0.0,
         "valid_pixels_total": int(valid_pixels.sum()) if valid_pixels.size else 0,
         "valid_pixels_median": int(np.median(valid_pixels)) if valid_pixels.size else 0,
         "ph_anchor_patch_count": int(sum(kind == "ph_anchor" for kind in partition_kinds)),
