@@ -26,6 +26,11 @@ MAX_PATCH_HEIGHT="${MAX_PATCH_HEIGHT:-160}"
 MAX_PATCH_WIDTH="${MAX_PATCH_WIDTH:-160}"
 PREVIEW_PATCHES="${PREVIEW_PATCHES:-32}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
+RUN_RADIUS_EVAL="${RUN_RADIUS_EVAL:-1}"
+EVAL_CHECKPOINTS="${EVAL_CHECKPOINTS:-best_val_pixel_f1}"
+RADIUS_SIGMAS="${RADIUS_SIGMAS:-1,2,4,8}"
+RADIUS_TARGET_THRESHOLD="${RADIUS_TARGET_THRESHOLD:-0.25}"
+RADIUS_TRUNCATE="${RADIUS_TRUNCATE:-3.0}"
 
 mkdir -p "${OUTPUT_DIR}" "${PATCH_CACHE_DIR}"
 
@@ -60,3 +65,22 @@ PYTHONUNBUFFERED=1 PYTHONPATH=. PYTORCH_ENABLE_MPS_FALLBACK=0 "${PYTHON_BIN}" \
   --patch-cache-mode "${PATCH_CACHE_MODE}" \
   --save-checkpoint \
   2>&1 | tee "${OUTPUT_DIR}/run.log"
+
+if [[ "${RUN_RADIUS_EVAL}" == "1" || "${RUN_RADIUS_EVAL}" == "true" || "${RUN_RADIUS_EVAL}" == "yes" ]]; then
+  for checkpoint in ${EVAL_CHECKPOINTS}; do
+    printf '[eval] checkpoint=%s radius_sigmas=%s\n' "${checkpoint}" "${RADIUS_SIGMAS}" | tee -a "${OUTPUT_DIR}/run.log"
+    PYTHONUNBUFFERED=1 PYTHONPATH=. PYTORCH_ENABLE_MPS_FALLBACK=0 "${PYTHON_BIN}" \
+      -m sub_module.evaluate_density_checkpoint \
+      --run-dir "${OUTPUT_DIR}" \
+      --checkpoint "${checkpoint}" \
+      --split test \
+      --calibration-split val \
+      --device "${DEVICE}" \
+      --batch-size "${BATCH_SIZE}" \
+      --num-workers "${NUM_WORKERS}" \
+      --radius-sigmas "${RADIUS_SIGMAS}" \
+      --radius-target-threshold "${RADIUS_TARGET_THRESHOLD}" \
+      --radius-truncate "${RADIUS_TRUNCATE}" \
+      2>&1 | tee -a "${OUTPUT_DIR}/run.log"
+  done
+fi

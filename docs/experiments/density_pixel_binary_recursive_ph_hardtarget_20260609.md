@@ -208,3 +208,36 @@ Rationale:
 PH remains central to recursive proposal generation and exact-cover patch construction. It is no longer exposed to the U-Net as broad binary masks or soft-attention fields.
 
 Implementation note: parent/child PH masks are now transient arrays only. New patch caches store the compact patch schema; older schema caches are compacted immediately after load.
+
+## Radius-Tolerant Post-Evaluation
+
+The active training target remains hard pixel occupancy:
+
+```text
+target_pixel = 1[raw_count > 0]
+prediction = sigmoid(pixel_logits)
+```
+
+For diagnostics only, checkpoint evaluation now also runs a Gaussian radius-tolerant probability sweep. This does not change the loss or checkpoint selection.
+
+Evaluation transform:
+
+```text
+pred_radius = masked_gaussian_smooth(sigmoid(pixel_logits), sigma)
+target_radius = exp(-0.5 * distance_to_nearest_positive_pixel^2 / sigma^2)
+target_binary_for_radius_f1 = target_radius >= 0.25
+```
+
+Default sweep:
+
+```text
+sigma_pixels = 1, 2, 4, 8
+radius_pixels = ceil(3 * sigma_pixels)
+```
+
+Interpretation:
+
+- Low hard pixel F1 but better radius F1 means the model is spatially near the AIS label but not exact-pixel aligned.
+- Low hard pixel F1 and low radius F1 means the model is not detecting the target.
+- High radius recall with poor precision means the model is producing broad false-positive probability fields.
+- The primary report should still keep hard pixel metrics separate from radius-tolerant metrics.

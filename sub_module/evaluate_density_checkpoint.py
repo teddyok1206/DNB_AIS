@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from scipy.ndimage import distance_transform_edt, gaussian_filter
 
 from .dnb_density_common import density_patch_collate, move_density_batch_to_device
 from .dnb_density_losses import build_density_loss
@@ -47,6 +48,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--threshold-grid-size", type=int, default=201)
+    parser.add_argument(
+        "--radius-sigmas",
+        default="1,2,4,8",
+        help="Comma-separated Gaussian sigma sweep in pixels for radius-tolerant probability evaluation. Empty disables radius evaluation.",
+    )
+    parser.add_argument("--radius-target-threshold", type=float, default=0.25, help="Threshold applied to the soft radius target for F1/IoU.")
+    parser.add_argument("--radius-truncate", type=float, default=3.0, help="Gaussian cutoff radius is ceil(sigma * truncate).")
     parser.add_argument("--patch-cache-dir", type=Path, default=None, help="Override patch cache directory when an older run summary did not record it.")
     parser.add_argument("--output-json", type=Path, default=None)
     return parser
@@ -214,6 +222,229 @@ def best_threshold_by_f1(probs: np.ndarray, targets: np.ndarray, grid_size: int)
     return dict(best)
 
 
+def parse_float_list(raw: str) -> list[float]:
+    values: list[float] = []
+    for item in str(raw).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        values.append(float(item))
+    return values
+
+
+def average_precision_score(scores: np.ndarray, targets: np.ndarray) -> float | None:
+    if scores.size == 0:
+        return None
+    positives = int(targets.sum())
+    if positives <= 0:
+        return None
+    order = np.argsort(-scores, kind="mergesort")
+    sorted_targets = targets[order].astype(np.float64, copy=False)
+    tp = np.cumsum(sorted_targets)
+    fp = np.cumsum(1.0 - sorted_targets)
+    precision = tp / np.maximum(tp + fp, 1.0)
+    recall = tp / max(float(positives), 1.0)
+    recall_delta = np.diff(np.concatenate(([0.0], recall)))
+    return float(np.sum(precision * recall_delta))
+
+
+def gaussian_smooth_probability(prob: np.ndarray, valid: np.ndarray, *, sigma: float, truncate: float, eps: float = 1.0e-8) -> np.ndarray:
+    prob = np.asarray(prob, dtype=np.float32)
+    valid = (np.asarray(valid, dtype=np.float32) > 0).astype(np.float32)
+    if float(sigma) <= 0.0:
+        return np.clip(prob * valid, 0.0, 1.0).astype(np.float32, copy=False)
+    numerator = gaussian_filter(prob * valid, sigma=float(sigma), mode="constant", cval=0.0, truncate=float(truncate))
+    denominator = gaussian_filter(valid, sigma=float(sigma), mode="constant", cval=0.0, truncate=float(truncate))
+    smoothed = np.divide(numerator, denominator, out=np.zeros_like(numerator, dtype=np.float32), where=denominator > float(eps))
+    return np.clip(smoothed * valid, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def gaussian_radius_target(target: np.ndarray, valid: np.ndarray, *, sigma: float, radius_pixels: int) -> np.ndarray:
+    target_bool = (np.asarray(target, dtype=np.float32) > 0.5) & (np.asarray(valid, dtype=np.float32) > 0)
+    valid_bool = np.asarray(valid, dtype=np.float32) > 0
+    if not bool(np.any(target_bool)):
+        return np.zeros_like(np.asarray(target, dtype=np.float32), dtype=np.float32)
+    if float(sigma) <= 0.0:
+        return target_bool.astype(np.float32) * valid_bool.astype(np.float32)
+    distance = distance_transform_edt(~target_bool)
+    radius = np.exp(-0.5 * (distance / max(float(sigma), 1.0e-6)) ** 2).astype(np.float32)
+    if int(radius_pixels) > 0:
+        radius[distance > int(radius_pixels)] = 0.0
+    return np.clip(radius * valid_bool.astype(np.float32), 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def soft_probability_metrics(pred: np.ndarray, target: np.ndarray, target_binary: np.ndarray) -> dict[str, Any]:
+    if pred.size == 0:
+        return {}
+    eps = 1.0e-8
+    pred = pred.astype(np.float64, copy=False)
+    target = target.astype(np.float64, copy=False)
+    overlap = np.minimum(pred, target)
+    pred_sum = float(pred.sum())
+    target_sum = float(target.sum())
+    return {
+        "soft_brier": float(np.mean((pred - target) ** 2)),
+        "soft_mae": float(np.mean(np.abs(pred - target))),
+        "soft_target_sum": target_sum,
+        "soft_pred_sum": pred_sum,
+        "soft_target_explained": float(overlap.sum() / max(target_sum, eps)),
+        "soft_pred_matched": float(overlap.sum() / max(pred_sum, eps)),
+        "average_precision": average_precision_score(pred.astype(np.float32, copy=False), target_binary.astype(bool, copy=False)),
+        "target_positive_count": int(target_binary.sum()),
+        "target_negative_count": int((~target_binary).sum()),
+        "sample_count": int(pred.size),
+    }
+
+
+def collect_radius_scores(
+    *,
+    model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
+    patches: list[Any],
+    batch_size: int,
+    size_divisor: int,
+    device: torch.device,
+    num_workers: int,
+    input_channels: list[str] | None,
+    sigma: float,
+    radius_pixels: int,
+    target_threshold: float,
+    truncate: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if not hasattr(loss_fn, "pixel_occupancy_from_output"):
+        empty_scores = np.asarray([], dtype=np.float32)
+        empty_targets = np.asarray([], dtype=np.float32)
+        empty_binary = np.asarray([], dtype=bool)
+        return empty_scores, empty_targets, empty_binary
+    loader = make_loader(
+        patches,
+        batch_size,
+        size_divisor,
+        shuffle=False,
+        num_workers=num_workers,
+        input_channels=input_channels,
+    )
+    pred_values: list[np.ndarray] = []
+    target_values: list[np.ndarray] = []
+    binary_values: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            batch = move_density_batch_to_device(batch, device)
+            output = model(batch["x"])
+            pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(output, batch)
+            probs_np = pixel_prob.detach().cpu().numpy()
+            targets_np = pixel_target.detach().cpu().numpy()
+            valid_np = pixel_valid.detach().cpu().numpy()
+            for idx, meta in enumerate(batch["metadata"]):
+                height, width = [int(v) for v in meta["shape"]]
+                prob_arr = probs_np[idx, 0, :height, :width]
+                target_arr = targets_np[idx, 0, :height, :width]
+                valid_arr = valid_np[idx, 0, :height, :width]
+                mask = valid_arr > 0
+                if not bool(np.any(mask)):
+                    continue
+                radius_pred = gaussian_smooth_probability(
+                    prob_arr,
+                    valid_arr,
+                    sigma=float(sigma),
+                    truncate=float(truncate),
+                )
+                radius_target = gaussian_radius_target(
+                    target_arr,
+                    valid_arr,
+                    sigma=float(sigma),
+                    radius_pixels=int(radius_pixels),
+                )
+                pred_values.append(radius_pred[mask].astype(np.float32, copy=False))
+                target_flat = radius_target[mask].astype(np.float32, copy=False)
+                target_values.append(target_flat)
+                binary_values.append(target_flat >= float(target_threshold))
+    if not pred_values:
+        return np.asarray([], dtype=np.float32), np.asarray([], dtype=np.float32), np.asarray([], dtype=bool)
+    return (
+        np.concatenate(pred_values).astype(np.float32, copy=False),
+        np.concatenate(target_values).astype(np.float32, copy=False),
+        np.concatenate(binary_values).astype(bool, copy=False),
+    )
+
+
+def evaluate_radius_probability_sweep(
+    *,
+    model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
+    calibration_patches: list[Any],
+    eval_patches: list[Any],
+    batch_size: int,
+    size_divisor: int,
+    device: torch.device,
+    num_workers: int,
+    input_channels: list[str] | None,
+    sigmas: list[float],
+    target_threshold: float,
+    threshold_grid_size: int,
+    truncate: float,
+) -> dict[str, Any]:
+    rows: dict[str, Any] = {}
+    for sigma in sigmas:
+        radius_pixels = int(np.ceil(max(float(sigma), 0.0) * max(float(truncate), 0.0)))
+        calibration_pred, calibration_target_soft, calibration_target_binary = collect_radius_scores(
+            model=model,
+            loss_fn=loss_fn,
+            patches=calibration_patches,
+            batch_size=batch_size,
+            size_divisor=size_divisor,
+            device=device,
+            num_workers=num_workers,
+            input_channels=input_channels,
+            sigma=float(sigma),
+            radius_pixels=radius_pixels,
+            target_threshold=float(target_threshold),
+            truncate=float(truncate),
+        )
+        eval_pred, eval_target_soft, eval_target_binary = collect_radius_scores(
+            model=model,
+            loss_fn=loss_fn,
+            patches=eval_patches,
+            batch_size=batch_size,
+            size_divisor=size_divisor,
+            device=device,
+            num_workers=num_workers,
+            input_channels=input_channels,
+            sigma=float(sigma),
+            radius_pixels=radius_pixels,
+            target_threshold=float(target_threshold),
+            truncate=float(truncate),
+        )
+        calibration_best = best_threshold_by_f1(calibration_pred, calibration_target_binary, int(threshold_grid_size))
+        calibrated_eval = (
+            threshold_metrics(eval_pred, eval_target_binary, float(calibration_best["threshold"]))
+            if calibration_best
+            else {}
+        )
+        fixed_eval = threshold_metrics(eval_pred, eval_target_binary, 0.5) if eval_pred.size else {}
+        label = f"sigma_{str(float(sigma)).replace('.', 'p')}"
+        rows[label] = {
+            "sigma_pixels": float(sigma),
+            "radius_pixels": int(radius_pixels),
+            "target_threshold": float(target_threshold),
+            "truncate": float(truncate),
+            "calibration_soft": soft_probability_metrics(calibration_pred, calibration_target_soft, calibration_target_binary),
+            "calibration_best_threshold": calibration_best,
+            "eval_soft": soft_probability_metrics(eval_pred, eval_target_soft, eval_target_binary),
+            "eval_fixed_threshold_0p5": fixed_eval,
+            "eval_calibrated_threshold": calibrated_eval,
+        }
+    return {
+        "method": "smooth sigmoid probability with masked Gaussian; compare to distance-transform Gaussian radius target",
+        "sigmas": [float(value) for value in sigmas],
+        "target_threshold": float(target_threshold),
+        "threshold_grid_size": int(threshold_grid_size),
+        "truncate": float(truncate),
+        "by_sigma": rows,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
     run_dir = args.run_dir.expanduser().resolve()
@@ -316,9 +547,29 @@ def main(argv: list[str] | None = None) -> int:
         else {}
     )
     pixel_fixed_eval = threshold_metrics(pixel_eval_probs, pixel_eval_targets, 0.5) if pixel_eval_probs.size else {}
+    radius_sigmas = parse_float_list(str(args.radius_sigmas))
+    radius_probability = (
+        evaluate_radius_probability_sweep(
+            model=model,
+            loss_fn=loss_fn,
+            calibration_patches=calibration_patches,
+            eval_patches=eval_patches,
+            batch_size=batch_size,
+            size_divisor=size_divisor,
+            device=device,
+            num_workers=int(args.num_workers),
+            input_channels=input_channels,
+            sigmas=radius_sigmas,
+            target_threshold=float(args.radius_target_threshold),
+            threshold_grid_size=int(args.threshold_grid_size),
+            truncate=float(args.radius_truncate),
+        )
+        if radius_sigmas
+        else {}
+    )
 
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "density_checkpoint_evaluation",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_dir": str(run_dir),
@@ -349,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
             "best": pixel_calibration_best,
         },
         "pixel_metrics_calibrated_threshold": pixel_calibrated_eval,
+        "radius_probability": radius_probability,
     }
     output_json = args.output_json
     if output_json is None:
@@ -366,6 +618,7 @@ def main(argv: list[str] | None = None) -> int:
                 "pixel_fixed": pixel_fixed_eval,
                 "pixel_calibrated": pixel_calibrated_eval,
                 "pixel_calibration": pixel_calibration_best,
+                "radius_probability": radius_probability,
             },
             ensure_ascii=False,
             indent=2,

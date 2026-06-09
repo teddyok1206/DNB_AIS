@@ -53,6 +53,15 @@ O_target = 1[sum(Y_pixel) > 0]
 P_patch = sigmoid(occupancy_logit)
 ```
 
+Auxiliary radius-tolerant evaluation:
+
+```text
+P_radius = masked_gaussian_smooth(P_pixel, sigma)
+Y_radius = exp(-0.5 * distance_to_nearest_positive_AIS_pixel^2 / sigma^2)
+```
+
+This is diagnostic only. It separates exact-pixel failure from near-miss localization and should be reported separately from the primary hard pixel metrics.
+
 Main loss:
 
 ```text
