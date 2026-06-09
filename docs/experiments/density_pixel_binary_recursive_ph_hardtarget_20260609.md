@@ -91,3 +91,78 @@ checkpoint: best_val_pixel_f1
 ```
 
 If the first run collapses to low recall, the next controlled change should be `pixel_pos_weight` or enabling the disabled Dice auxiliary. Do not reintroduce smoothed labels as the main target unless the hard-label premise is intentionally abandoned.
+
+## First Experiment Result
+
+Run directory:
+
+```text
+outputs/dnb_density/runs/pixel_binary_recursive_ph_hardtarget_e18_20260609_194707
+```
+
+Run metadata:
+
+- Git commit: `43594083cd54c866337bc3a83000ee6fdfc8dd22`
+- Git dirty: `false`
+- Device: `mps`
+- Epochs: `18`
+- Checkpoint evaluated on test: `best_val_pixel_f1`
+- Config hash: `f509ae8e5a5fbe85893797367a76d2e1cfecb4f12592458ed95db123178d3277`
+- Train patches: `7106`
+- Val patches: `1688`
+- Test patches: `1354`
+
+Best validation checkpoints:
+
+- Best val loss: epoch `7`, `0.5660`
+- Best val occupancy F1: epoch `17`, `0.7260`
+- Best val pixel F1: epoch `14`, `0.0631`
+- Best val pixel IoU: epoch `14`, `0.0326`
+- Best val pixel precision: epoch `14`, `0.0363`
+- Best val pixel recall: epoch `11`, `0.3072`
+
+Final epoch 18 validation:
+
+- Occupancy F1: `0.7083`
+- Pixel F1: `0.0573`
+- Pixel IoU: `0.0295`
+- Pixel precision: `0.0322`
+- Pixel recall: `0.2577`
+- Pixel Brier: `0.0173`
+
+Test evaluation for `best_val_pixel_f1` at threshold `0.5`:
+
+- Occupancy F1: `0.6616`
+- Occupancy precision: `0.6600`
+- Occupancy recall: `0.6631`
+- Pixel F1: `0.0514`
+- Pixel IoU: `0.0264`
+- Pixel precision: `0.0284`
+- Pixel recall: `0.2707`
+- Pixel Brier: `0.0203`
+- Pixel positives: target `2379`, predicted `22700`, TP `644`, FP `22056`, FN `1735`
+
+Test evaluation with pixel threshold calibrated on validation:
+
+- Threshold: `0.925`
+- Pixel F1: `0.1048`
+- Pixel IoU: `0.0553`
+- Pixel precision: `0.0848`
+- Pixel recall: `0.1370`
+- Pixel positives: target `2379`, predicted `3845`, TP `326`, FP `3519`, FN `2053`
+
+Interpretation:
+
+- The hard pixel target pipeline runs end-to-end and produces a cleaner scientific question than the previous smoothed-density target.
+- Patch-level context is learnable; occupancy F1 reaches about `0.72` on validation and improves to `0.7213` on test after occupancy-threshold calibration.
+- Pixel localization remains the bottleneck. At threshold `0.5`, the model overpredicts positive pixels by roughly `9.5x` on test.
+- Pixel-threshold calibration roughly doubles pixel F1 from `0.0514` to `0.1048`, but it does so by raising precision and sacrificing recall.
+- Pixel accuracy is not meaningful because positive pixels are about `0.1%` of valid pixels.
+- Legacy mass and overlap diagnostics are not primary metrics for this family; they mostly expose probability-mass calibration problems.
+
+Next controlled changes:
+
+- Add calibrated pixel-threshold reporting as a standard output for this experiment family.
+- Inspect qualitative FP/FN previews before changing the model; current previews show broad positive probability in some valid fallback regions.
+- Run a small controlled loss sweep before adding architecture complexity: `pixel_pos_weight` around `128`, `256`, and `512`, and optionally one Dice/Tversky auxiliary run.
+- Consider a separately reported tolerance-band pixel metric if exact AIS-to-DNB pixel alignment is too strict, but keep hard labels as the main target unless that premise is intentionally changed.
