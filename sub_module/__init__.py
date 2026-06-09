@@ -30,6 +30,7 @@ from .dnb_density_losses import (
 from .dnb_density_models import (
     DensityModelConfig,
     PixelBinaryOccupancyUNet,
+    PixelProbabilityUNet,
     build_density_model,
 )
 from .kr_sea_mask import (
@@ -72,6 +73,7 @@ __all__ = [
     "summarize_density_patches",
     "DensityModelConfig",
     "PixelBinaryOccupancyUNet",
+    "PixelProbabilityUNet",
     "build_density_model",
     "PixelBinaryOccupancyLoss",
     "PixelBinaryOccupancyLossConfig",

@@ -543,15 +543,7 @@ def run_batches(
     )
     losses: list[float] = []
     components: list[dict[str, float]] = []
-    pred_sum = 0.0
-    target_sum = 0.0
-    overlap_sum = 0.0
     patch_count = 0
-    pred_patch_masses: list[float] = []
-    target_patch_masses: list[float] = []
-    spatial_overlaps: list[float] = []
-    occupancy_probs: list[float] = []
-    occupancy_targets: list[float] = []
     pixel_tp = 0
     pixel_fp = 0
     pixel_fn = 0
@@ -560,7 +552,6 @@ def run_batches(
     pixel_target_positive_count = 0
     pixel_pred_positive_count = 0
     pixel_brier_sum = 0.0
-    uses_occupancy_loss = hasattr(loss_fn, "occupancy_from_output")
     uses_pixel_occupancy_loss = hasattr(loss_fn, "pixel_occupancy_from_output")
     eps = 1.0e-8
     if train:
@@ -584,30 +575,9 @@ def run_batches(
                 if float(grad_clip_norm) > 0.0:
                     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=float(grad_clip_norm))
                 optimizer.step()
-            pred_density = loss_fn.density_from_output(pred_output, batch) if hasattr(loss_fn, "density_from_output") else pred_output
             losses.append(float(loss.detach().cpu()))
             if getattr(loss_fn, "last_components", None):
                 components.append(dict(loss_fn.last_components))
-            pred_masked = pred_density.detach() * batch["valid_mask"]
-            target_metric_density = target_density_for_metrics(loss_fn, batch)
-            target_masked = target_metric_density.detach() * batch["valid_mask"]
-            pred_sum += float(pred_masked.sum().cpu())
-            target_sum += float(target_masked.sum().cpu())
-            overlap_sum += float(torch.minimum(pred_masked, target_masked).sum().cpu())
-            pred_mass_batch = pred_masked.flatten(1).sum(dim=1)
-            target_mass_batch = target_masked.flatten(1).sum(dim=1)
-            pred_patch_masses.extend(float(v) for v in pred_mass_batch.detach().cpu().tolist())
-            target_patch_masses.extend(float(v) for v in target_mass_batch.detach().cpu().tolist())
-            target_positive = target_mass_batch > eps
-            if bool(target_positive.any()):
-                pred_prob = pred_masked / torch.clamp(pred_mass_batch.reshape(-1, 1, 1, 1), min=eps)
-                target_prob = target_masked / torch.clamp(target_mass_batch.reshape(-1, 1, 1, 1), min=eps)
-                spatial_batch = torch.minimum(pred_prob, target_prob).flatten(1).sum(dim=1)
-                spatial_overlaps.extend(float(v) for v in spatial_batch[target_positive].detach().cpu().tolist())
-            if hasattr(loss_fn, "occupancy_from_output"):
-                occ_prob, occ_target = loss_fn.occupancy_from_output(pred_output, batch)
-                occupancy_probs.extend(float(v) for v in occ_prob.detach().cpu().tolist())
-                occupancy_targets.extend(float(v) for v in occ_target.detach().cpu().tolist())
             if hasattr(loss_fn, "pixel_occupancy_from_output"):
                 pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(pred_output, batch)
                 target_threshold = float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5))
@@ -623,80 +593,13 @@ def run_batches(
                 pixel_pred_positive_count += int(pred_bool.sum().cpu())
                 pixel_brier_sum += float((((pixel_prob.detach() - pixel_target.detach()) ** 2) * pixel_valid.detach()).sum().cpu())
             patch_count += len(batch["metadata"])
-    pred_masses = np.asarray(pred_patch_masses, dtype=np.float64)
-    target_masses = np.asarray(target_patch_masses, dtype=np.float64)
-    mass_error = pred_masses - target_masses if pred_masses.size else np.asarray([], dtype=np.float64)
-    positive_mask = target_masses > eps if target_masses.size else np.asarray([], dtype=bool)
-    smape = (
-        2.0 * np.abs(mass_error) / np.maximum(np.abs(pred_masses) + np.abs(target_masses), eps)
-        if pred_masses.size
-        else np.asarray([], dtype=np.float64)
-    )
-    target_positive_count = int(positive_mask.sum()) if positive_mask.size else 0
-    pred_target_ratio = float(pred_sum / max(target_sum, eps))
     metrics = {
         "patch_count": int(patch_count),
         "batch_count": int(len(losses)),
         "loss_mean": float(np.mean(losses)) if losses else None,
         "loss_last": float(losses[-1]) if losses else None,
         "loss_components_mean": average_dicts(components),
-        "pred_sum": float(pred_sum),
-        "target_sum": float(target_sum),
-        "pred_target_ratio": pred_target_ratio,
-        "positive_patch_count": target_positive_count,
-        "zero_target_patch_count": int((~positive_mask).sum()) if positive_mask.size else 0,
-        "target_explained": float(overlap_sum / max(target_sum, eps)),
-        "pred_matched": float(overlap_sum / max(pred_sum, eps)),
-        "spatial_overlap_mean_positive": float(np.mean(spatial_overlaps)) if spatial_overlaps else None,
     }
-    if uses_occupancy_loss:
-        metrics.update(
-            {
-                "occupancy_mass_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
-                "occupancy_mass_bias": float(pred_sum - target_sum),
-                "patch_occupancy_mass_mae": float(np.mean(np.abs(mass_error))) if mass_error.size else None,
-                "patch_occupancy_mass_rmse": float(np.sqrt(np.mean(mass_error**2))) if mass_error.size else None,
-                "patch_occupancy_mass_bias_mean": float(np.mean(mass_error)) if mass_error.size else None,
-                "patch_occupancy_mass_smape": float(np.mean(smape)) if smape.size else None,
-            }
-        )
-    else:
-        metrics.update(
-            {
-                "count_ratio_abs_log_error": float(abs(np.log((pred_sum + eps) / (target_sum + eps)))),
-                "count_bias": float(pred_sum - target_sum),
-                "patch_count_mae": float(np.mean(np.abs(mass_error))) if mass_error.size else None,
-                "patch_count_rmse": float(np.sqrt(np.mean(mass_error**2))) if mass_error.size else None,
-                "patch_count_bias_mean": float(np.mean(mass_error)) if mass_error.size else None,
-                "patch_count_smape": float(np.mean(smape)) if smape.size else None,
-            }
-        )
-    if occupancy_targets:
-        probs = np.asarray(occupancy_probs, dtype=np.float64)
-        targets = np.asarray(occupancy_targets, dtype=np.float64) > 0.5
-        pred_positive = probs >= 0.5
-        tp = int(np.logical_and(pred_positive, targets).sum())
-        fp = int(np.logical_and(pred_positive, ~targets).sum())
-        fn = int(np.logical_and(~pred_positive, targets).sum())
-        tn = int(np.logical_and(~pred_positive, ~targets).sum())
-        precision = tp / max(tp + fp, 1)
-        recall = tp / max(tp + fn, 1)
-        metrics.update(
-            {
-                "occupancy_accuracy": float((tp + tn) / max(len(targets), 1)),
-                "occupancy_precision": float(precision),
-                "occupancy_recall": float(recall),
-                "occupancy_f1": float(2.0 * precision * recall / max(precision + recall, eps)),
-                "occupancy_brier": float(np.mean((probs - targets.astype(np.float64)) ** 2)),
-                "occupancy_positive_target_count": int(targets.sum()),
-                "occupancy_negative_target_count": int((~targets).sum()),
-                "occupancy_pred_positive_count": int(pred_positive.sum()),
-                "occupancy_tp": tp,
-                "occupancy_fp": fp,
-                "occupancy_fn": fn,
-                "occupancy_tn": tn,
-            }
-        )
     if uses_pixel_occupancy_loss and pixel_valid_count > 0:
         pixel_precision = pixel_tp / max(pixel_tp + pixel_fp, 1)
         pixel_recall = pixel_tp / max(pixel_tp + pixel_fn, 1)
@@ -885,6 +788,7 @@ def save_inference_previews(
     )
     model.eval()
     target_label = str(getattr(loss_fn, "target_display_name", "target probability field"))
+    target_threshold = float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5))
     saved = 0
     with torch.no_grad():
         for batch in loader:
@@ -920,15 +824,16 @@ def save_inference_previews(
                         ("valid owner mask", valid_arr, "gray", 0.0, 1.0),
                     ]
                 )
-                pred_sum = float((pred_arr * valid_arr).sum())
-                target_sum = float((target_arr * valid_arr).sum())
+                valid_pixels = int((valid_arr > 0).sum())
+                mean_pred = float((pred_arr * valid_arr).sum() / max(valid_pixels, 1))
+                target_presence_pixels = int(((target_arr >= target_threshold) & (valid_arr > 0)).sum())
                 path = output_dir / f"inference_preview_{saved:03d}_{meta['partition_kind']}_{meta.get('partition_id')}.png"
                 save_panel_grid(
                     path,
                     panels,
                     title=(
                         f"{meta['partition_kind']} | scene-partition {meta.get('partition_id')} "
-                        f"| pred_sum={pred_sum:.2f} | target_sum={target_sum:.2f}"
+                        f"| mean_prob={mean_pred:.3f} | target_presence_px={target_presence_pixels}"
                     ),
                     cols=4,
                     dpi=150,

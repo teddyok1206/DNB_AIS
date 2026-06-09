@@ -17,6 +17,7 @@ class DensityModelConfig:
     depth: int = 4
     dropout: float = 0.0
     occupancy_hidden_channels: int | None = None
+    with_occupancy_head: bool = True
 
 
 def _group_count(channels: int) -> int:
@@ -57,10 +58,12 @@ class UpBlock(nn.Module):
 
 
 class PixelBinaryOccupancyUNet(nn.Module):
-    """U-Net for hard pixel-level ship presence plus auxiliary patch O/X.
+    """U-Net for per-pixel ship-presence probability.
 
     The pixel head emits independent logits. It is intentionally not a spatial
     softmax and does not force each patch to allocate unit probability mass.
+    The patch O/X head is retained only for backwards-compatible checkpoints;
+    active probability-map configs should disable it.
     """
 
     def __init__(
@@ -71,20 +74,25 @@ class PixelBinaryOccupancyUNet(nn.Module):
         depth: int = 4,
         occupancy_hidden_channels: int | None = None,
         dropout: float = 0.0,
+        with_occupancy_head: bool = True,
+        model_name: str = "PixelBinaryOccupancyUNet",
     ) -> None:
         super().__init__()
         depth = max(int(depth), 2)
         base_channels = int(base_channels)
+        with_occupancy_head = bool(with_occupancy_head)
         channels = [base_channels * (2**idx) for idx in range(depth)]
         self.config = DensityModelConfig(
-            name="PixelBinaryOccupancyUNet",
+            name=str(model_name),
             in_channels=int(in_channels),
             out_channels=int(out_channels),
             base_channels=base_channels,
             depth=depth,
             dropout=float(dropout),
             occupancy_hidden_channels=occupancy_hidden_channels,
+            with_occupancy_head=with_occupancy_head,
         )
+        self.with_occupancy_head = with_occupancy_head
         self.encoder = nn.ModuleList()
         self.encoder.append(ResidualConvBlock(int(in_channels), channels[0], dropout=float(dropout)))
         for idx in range(1, depth):
@@ -95,15 +103,18 @@ class PixelBinaryOccupancyUNet(nn.Module):
             self.decoder.append(UpBlock(channels[idx], channels[idx - 1], channels[idx - 1], dropout=float(dropout)))
         self.pixel_head = nn.Conv2d(channels[0], int(out_channels), kernel_size=1)
 
-        hidden = int(occupancy_hidden_channels or max(channels[-1] // 2, base_channels))
-        self.occupancy_head = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(channels[-1], hidden),
-            nn.SiLU(),
-            nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
-            nn.Linear(hidden, 1),
-        )
+        if self.with_occupancy_head:
+            hidden = int(occupancy_hidden_channels or max(channels[-1] // 2, base_channels))
+            self.occupancy_head = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(channels[-1], hidden),
+                nn.SiLU(),
+                nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
+                nn.Linear(hidden, 1),
+            )
+        else:
+            self.occupancy_head = None
 
     def architecture_dict(self) -> dict[str, Any]:
         return self.config.__dict__.copy()
@@ -119,10 +130,23 @@ class PixelBinaryOccupancyUNet(nn.Module):
         decoded = bottleneck
         for block, skip in zip(self.decoder, reversed(skips[:-1])):
             decoded = block(decoded, skip)
-        return {
-            "pixel_logits": self.pixel_head(decoded),
-            "occupancy_logit": self.occupancy_head(bottleneck),
-        }
+        output = {"pixel_logits": self.pixel_head(decoded)}
+        if self.occupancy_head is not None:
+            output["occupancy_logit"] = self.occupancy_head(bottleneck)
+        return output
+
+
+class PixelProbabilityUNet(PixelBinaryOccupancyUNet):
+    """Pixel-only probability-map U-Net without the retired patch O/X head."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.pop("with_occupancy_head", None)
+        kwargs.pop("model_name", None)
+        super().__init__(
+            with_occupancy_head=False,
+            model_name="PixelProbabilityUNet",
+            **kwargs,
+        )
 
 
 def build_density_model(name: str, **kwargs: Any) -> nn.Module:
@@ -139,6 +163,15 @@ def build_density_model(name: str, **kwargs: Any) -> nn.Module:
     }
     if normalized in active_names:
         return PixelBinaryOccupancyUNet(**kwargs)
+    probability_names = {
+        "pixel_probability",
+        "pixel_probability_unet",
+        "pixelprobabilityunet",
+        "probability_field_unet",
+        "ship_presence_probability",
+    }
+    if normalized in probability_names:
+        return PixelProbabilityUNet(**kwargs)
     retired = {
         "masked_density_unet",
         "maskeddensityunet",

@@ -229,8 +229,9 @@ class PixelBinaryOccupancyLoss(nn.Module):
         dice = self._soft_dice_loss(pixel_logits, target, weight, float(cfg.eps)) if float(cfg.dice_weight) > 0.0 else pixel.new_tensor(0.0)
 
         occupancy = pixel.new_tensor(0.0)
-        occupancy_target = self.occupancy_target(batch)
+        occupancy_target = None
         if occupancy_logit is not None and float(cfg.occupancy_weight) > 0.0:
+            occupancy_target = self.occupancy_target(batch)
             patch_weight = sample_weight.reshape(-1)
             occ_element = F.binary_cross_entropy_with_logits(occupancy_logit, occupancy_target, reduction="none")
             if float(cfg.occupancy_pos_weight) != 1.0:
@@ -252,10 +253,8 @@ class PixelBinaryOccupancyLoss(nn.Module):
             self.last_components = {
                 "loss_total": float(total.detach().cpu()),
                 "loss_pixel_bce": float(pixel.detach().cpu()),
-                "loss_patch_occupancy": float(occupancy.detach().cpu()),
                 "loss_pixel_dice": float(dice.detach().cpu()),
                 "loss_weight_pixel": float(cfg.pixel_weight),
-                "loss_weight_patch_occupancy": float(cfg.occupancy_weight),
                 "loss_weight_dice": float(cfg.dice_weight),
                 "target_mode": 1.0 if str(cfg.target_mode).strip().lower() in {"radius_probability", "probability_field", "gaussian_radius", "proximity"} else 0.0,
                 "radius_probability_sigma_pixels": float(cfg.radius_probability_sigma_pixels),
@@ -266,13 +265,22 @@ class PixelBinaryOccupancyLoss(nn.Module):
                 "source_pixel_positive_fraction": float((source_target > 0.5).to(dtype=target.dtype).sum().detach().cpu() / valid_count),
                 "probability_target_mean": float((target * valid_mask).sum().detach().cpu() / valid_count),
                 "pixel_pred_mean": float((pred_prob * valid_mask).sum().detach().cpu() / valid_count),
-                "patch_occupancy_target_mean": float(occupancy_target.detach().mean().cpu()),
                 "target_pixel_count_mean": float(self.target_count(batch).detach().mean().cpu()),
                 "lifetime_weight_mode": 0.0 if str(cfg.lifetime_weight_mode).lower() in {"none", "off", "false", "0"} else 1.0,
                 "lifetime_weight_strength": float(cfg.lifetime_weight_strength),
                 "lifetime_weight_mean": float(sample_weight.detach().mean().cpu()),
                 "lifetime_weight_max": float(sample_weight.detach().max().cpu()),
             }
+            if float(cfg.occupancy_weight) > 0.0:
+                if occupancy_target is None:
+                    occupancy_target = self.occupancy_target(batch)
+                self.last_components.update(
+                    {
+                        "loss_patch_occupancy": float(occupancy.detach().cpu()),
+                        "loss_weight_patch_occupancy": float(cfg.occupancy_weight),
+                        "patch_occupancy_target_mean": float(occupancy_target.detach().mean().cpu()),
+                    }
+                )
         return total
 
 
@@ -285,6 +293,8 @@ def build_density_loss(config: dict[str, Any] | PixelBinaryOccupancyLossConfig |
         normalized = str(config.get("name", "pixel_binary_occupancy_loss")).lower()
         if normalized in {
             "pixel_binary_occupancy_loss",
+            "radius_probability_loss",
+            "probability_field_loss",
             "radius_probability_occupancy_loss",
             "probability_field_occupancy_loss",
             "probability_field_occupancy",

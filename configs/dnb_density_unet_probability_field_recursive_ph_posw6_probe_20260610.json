@@ -1,52 +1,34 @@
 {
-  "schema_version": 6,
+  "schema_version": 7,
   "experiment_family": "dnb_density_probability_field",
   "role": "main",
   "status": "experiment_probability_field_recursive_ph_20260610",
   "locked_on": "2026-06-10",
-  "locked_decision": "Use PH-guided recursive scene partitioning, but abandon exact pixel-hit supervision. Raw AIS pixels are only seeds for a Gaussian 0..1 proximity probability field target.",
+  "locked_decision": "Train a pure per-pixel ship-presence probability map. Raw AIS pixels seed a Gaussian proximity target; patch O/X, count-mass, and soft-overlap objectives/metrics are retired.",
   "description": "Probability-field recursive PH U-Net probe with pixel_pos_weight=6. Brightness, PH persistence, and PH seed are the only inputs.",
   "device": "mps",
   "primary_target": {
-    "name": "radius_probability_field",
+    "name": "ship_presence_probability_map",
     "definition": "source_pixel = raw_count > 0; target_probability = exp(-distance(source_pixel)^2 / (2 * sigma_pixels^2)), truncated to radius_pixels and masked by valid owner sea pixels",
-    "prediction": "pixel_logits -> sigmoid(pixel_logits) as a 0..1 proximity probability field",
+    "prediction": "pixel_logits -> sigmoid(pixel_logits) as a 0..1 ship-presence probability map",
     "field_seed": "raw AIS count pixels remain exact seed points; the learned target is probability of proximity, not count density and not exact pixel identity",
     "main_metrics": [
-      "pixel_precision",
-      "pixel_recall",
-      "pixel_f1",
-      "pixel_iou",
-      "pixel_brier",
-      "radius_probability.average_precision",
-      "soft_target_explained",
-      "soft_pred_matched"
+      "presence_probability.model_probability.average_precision",
+      "presence_probability.brightness_baseline.average_precision",
+      "presence_probability.model_vs_brightness_lift.average_precision_ratio",
+      "presence_probability.model_probability.precision_at_top.top_1pct.precision",
+      "presence_probability.model_probability.brier",
+      "presence_probability.model_calibrated_threshold.f1",
+      "radius_presence.by_sigma.*.model_probability.average_precision",
+      "radius_presence.by_sigma.*.brightness_baseline.average_precision"
     ],
     "not_primary": [
-      "exact_raw_pixel_hit",
-      "sum_preserving_density_count"
+      "ship_count_regression",
+      "sum_preserving_density_count",
+      "soft_overlap_or_mass_explained",
+      "patch_level_occupancy_classification",
+      "exact_raw_pixel_hit"
     ]
-  },
-  "auxiliary_options": {
-    "gt_smoothing": {
-      "enabled_for_main_target": true,
-      "target_type": "radius_probability_field",
-      "rationale": "The target is intentionally a proximity probability field because DNB pixels are coarse relative to AIS point locations. This is not count-mass smoothing."
-    },
-    "patch_occupancy_auxiliary": {
-      "enabled": true,
-      "loss_weight": 0.1,
-      "rationale": "Patch O/X is retained only as a weak regularizer so the model notices empty patches; it is not the reporting target."
-    },
-    "dice_auxiliary": {
-      "enabled": false,
-      "loss_weight": 0.0,
-      "rationale": "Keep the first probability-field run simple. Dice can be enabled later if weighted BCE collapses to all-background."
-    },
-    "spatial_softmax_overlap": {
-      "enabled": false,
-      "rationale": "The new pixel head is independent sigmoid, not a per-patch probability distribution softmax."
-    }
   },
   "sea_mask": {
     "enabled": true,
@@ -139,21 +121,20 @@
     "role": "legacy_sum_preserving_density_for_visualization_compatibility_only; probability-field loss builds its target from raw_count seeds."
   },
   "model": {
-    "name": "PixelBinaryOccupancyUNet",
+    "name": "PixelProbabilityUNet",
     "in_channels": 3,
     "out_channels": 1,
     "base_channels": 32,
     "depth": 4,
-    "occupancy_hidden_channels": 128,
     "dropout": 0.05
   },
   "training": {
     "loss": {
-      "name": "radius_probability_occupancy_loss",
+      "name": "radius_probability_loss",
       "target_mode": "radius_probability",
-      "rationale": "Probe radius-probability field supervision with pixel_pos_weight=6; intermediate between broad pos_weight=8 and conservative pos_weight=4/2.",
-      "pixel_weight": 0.9,
-      "occupancy_weight": 0.1,
+      "rationale": "Train sigmoid pixel logits against a Gaussian proximity probability field seeded by raw_count > 0. No patch O/X auxiliary, no count-mass preservation, and no soft-overlap objective.",
+      "pixel_weight": 1.0,
+      "occupancy_weight": 0.0,
       "pixel_pos_weight": 6.0,
       "occupancy_pos_weight": 1.0,
       "dice_weight": 0.0,
@@ -173,5 +154,24 @@
     "lr": 5e-05,
     "weight_decay": 0.0003,
     "grad_clip_norm": 1.0
+  },
+  "pipeline_scope": {
+    "active": [
+      "brightness_ph_persistence_ph_seed_inputs",
+      "gaussian_radius_probability_target_from_raw_ais_seeds",
+      "model_vs_brightness_presence_ranking_evaluation",
+      "probability_calibration_on_validation_split"
+    ],
+    "retired": [
+      "patch_occupancy_auxiliary_loss",
+      "dice_auxiliary_loss",
+      "spatial_softmax_overlap",
+      "count_density_mass_metrics",
+      "soft_target_explained",
+      "soft_pred_matched",
+      "pred_target_ratio",
+      "ship_count_regression"
+    ],
+    "rationale": "The project target is whether bright pixels in the learned probability map correspond to ship presence better than bright pixels in raw DNB, not count recovery."
   }
 }

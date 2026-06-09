@@ -1,30 +1,35 @@
-# Probability Field Recursive PH Run
+# Probability Field Recursive PH Pipeline
 
 Date: 2026-06-10
 
 ## Decision
 
-The active target is now a radius-tolerant ship-proximity probability field. Exact AIS pixel hit supervision is intentionally abandoned.
+The active target is now a pure per-pixel ship-presence probability map.
 
 ```text
 source_pixel = 1[raw_count > 0]
 target_probability = exp(-0.5 * distance_to_nearest_source_pixel^2 / sigma_pixels^2)
+P_pixel = sigmoid(pixel_logits)
 ```
 
-The field is truncated to `radius_pixels`, clipped to `[0, 1]`, and masked by the valid owner sea mask. This is not count-density smoothing: AIS points are exact seeds, and the model learns proximity probability rather than conserved ship mass.
+The Gaussian field is only a tolerance/proximity label around exact AIS seed pixels. It is not count-density smoothing, it is not mass preserving, and it is not a ship-count target.
 
-## Rationale
+## What Was Removed
 
-The hard pixel run showed that patch-level O/X was learnable, but exact pixel localization was not a useful primary objective at the current DNB resolution and AIS alignment quality. A no-cache probe on 2026-06-10 produced:
+The active pipeline no longer reports or optimizes:
 
 ```text
-patch O/X calibrated F1: 0.625
-exact pixel F1: 0.0
-radius sigma=8 AP: 0.180
-radius sigma=8 calibrated F1: 0.223
+patch O/X auxiliary objective
+ship-count regression
+sum-preserving density/count mass
+pred_target_ratio
+soft_target_explained
+soft_pred_matched
+spatial_overlap_mean_positive
+patch occupancy metrics as headline results
 ```
 
-This means the model can learn coarse target presence and broad proximity, but exact pixel supervision is too brittle.
+Scene/patch target sums can still appear in build logs as dataset sanity checks, but they are not model-quality metrics.
 
 ## Active Config
 
@@ -32,22 +37,21 @@ This means the model can learn coarse target presence and broad proximity, but e
 configs/dnb_density_unet_probability_field_recursive_ph_20260610.json
 ```
 
-Important loss settings:
+Important settings:
 
 ```text
-training.loss.name = radius_probability_occupancy_loss
+model.name = PixelProbabilityUNet
+training.loss.name = radius_probability_loss
 training.loss.target_mode = radius_probability
 radius_probability_sigma_pixels = 4.0
 radius_probability_radius_pixels = 12
 probability_target_threshold = 0.25
-pixel_pos_weight = 8.0
-pixel_weight = 0.9
-occupancy_weight = 0.1
+pixel_weight = 1.0
+occupancy_weight = 0.0
+dice_weight = 0.0
 ```
 
-## Model And Inputs
-
-The model remains `PixelBinaryOccupancyUNet` and still emits independent per-pixel sigmoid logits plus an auxiliary patch O/X head.
+## Inputs
 
 Active input channels remain fixed:
 
@@ -57,36 +61,49 @@ ph_persistence_map
 ph_seed_map
 ```
 
-PH remains central for recursive proposal/patch construction and for the two physically interpretable PH feature channels. Broad parent/child masks, soft attention, and lifetime maps remain removed from U-Net inputs.
+PH remains useful in two places:
 
-## Metrics
+```text
+1. recursive PH-guided patch/partition construction
+2. physically interpretable PH persistence and seed feature channels
+```
 
-`pixel_*` metrics now mean thresholded probability-field metrics, not exact AIS-pixel hit metrics. The target threshold is recorded as `pixel_target_threshold`.
+Broad parent/child masks, soft attention, anchor lifetime maps, and patch O/X heads are not active model inputs/objectives.
+
+## Evaluation
+
+The central question is:
+
+```text
+Are bright pixels in the learned probability map more likely to indicate AIS ship presence than bright pixels in the raw DNB image?
+```
+
+The checkpoint evaluator now compares model probability and raw brightness on the same valid pixels and the same binary presence target.
 
 Primary readout:
 
 ```text
-pixel_f1
-pixel_iou
-pixel_precision
-pixel_recall
-pixel_brier
-radius_probability.by_sigma.*.eval_soft.average_precision
-radius_probability.by_sigma.*.eval_soft.soft_target_explained
-radius_probability.by_sigma.*.eval_soft.soft_pred_matched
+presence_probability.model_probability.average_precision
+presence_probability.brightness_baseline.average_precision
+presence_probability.model_vs_brightness_lift.average_precision_ratio
+presence_probability.model_probability.precision_at_top.top_1pct.precision
+presence_probability.model_probability.brier
+presence_probability.model_calibrated_threshold.f1
 ```
 
-Secondary readout:
+Radius-tolerant sweep:
 
 ```text
-occupancy_f1: patch-level auxiliary behavior
-pred_target_ratio: probability-mass calibration diagnostic, not count error
-spatial_overlap_mean_positive: normalized map overlap diagnostic
+radius_presence.by_sigma.*.model_probability.average_precision
+radius_presence.by_sigma.*.brightness_baseline.average_precision
+radius_presence.by_sigma.*.model_vs_brightness_lift.average_precision_ratio
 ```
+
+Brightness is treated as a ranking baseline, not a calibrated probability, so Brier/calibration are reported for the model probability map only.
 
 ## Operational Notes
 
-The default runner now points to the probability-field config:
+The default runner still uses:
 
 ```text
 scripts/run_density_pixel_binary_recursive_ph.sh
@@ -98,4 +115,15 @@ For quick feasibility checks, run without patch cache:
 --patch-cache-mode off
 ```
 
-The checkpoint evaluator can now evaluate no-cache runs by rebuilding the required split patches in memory from `command.txt`; it does not write patch cache files in that path.
+For proper comparison, evaluate a checkpoint with:
+
+```text
+python -m sub_module.evaluate_density_checkpoint \
+  --run-dir <run_dir> \
+  --checkpoint best_val_pixel_f1 \
+  --split test \
+  --calibration-split val \
+  --radius-sigmas 1,2,4,8
+```
+
+The resulting JSON schema is version 3 and is centered on `presence_probability` and `radius_presence`.

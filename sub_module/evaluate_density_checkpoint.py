@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from scipy.ndimage import distance_transform_edt, gaussian_filter
+from scipy.ndimage import distance_transform_edt
 
 from .dnb_density_common import density_patch_collate, move_density_batch_to_device
 from .dnb_density_losses import build_density_loss
@@ -172,7 +172,18 @@ def load_model_and_loss(checkpoint_path: Path, config: dict[str, Any], device: t
     return model, loss_fn, config
 
 
-def collect_occupancy_scores(
+def brightness_channel_index(input_channels: list[str] | None, batch_channels: list[str] | None = None) -> int:
+    channel_names = batch_channels if batch_channels else input_channels
+    if not channel_names:
+        return 0
+    normalized = [str(name).strip().lower() for name in channel_names]
+    for candidate in ("brightness", "radiance", "dnb", "image"):
+        if candidate in normalized:
+            return int(normalized.index(candidate))
+    return 0
+
+
+def collect_presence_scores(
     *,
     model: torch.nn.Module,
     loss_fn: torch.nn.Module,
@@ -182,43 +193,13 @@ def collect_occupancy_scores(
     device: torch.device,
     num_workers: int,
     input_channels: list[str] | None,
-) -> tuple[np.ndarray, np.ndarray]:
-    if not hasattr(loss_fn, "occupancy_from_output"):
-        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
-    loader = make_loader(
-        patches,
-        batch_size,
-        size_divisor,
-        shuffle=False,
-        num_workers=num_workers,
-        input_channels=input_channels,
-    )
-    probs: list[float] = []
-    targets: list[bool] = []
-    model.eval()
-    with torch.no_grad():
-        for batch in loader:
-            batch = move_density_batch_to_device(batch, device)
-            output = model(batch["x"])
-            occ_prob, occ_target = loss_fn.occupancy_from_output(output, batch)
-            probs.extend(float(v) for v in occ_prob.detach().cpu().tolist())
-            targets.extend(bool(v > 0.5) for v in occ_target.detach().cpu().tolist())
-    return np.asarray(probs, dtype=np.float64), np.asarray(targets, dtype=bool)
-
-
-def collect_pixel_scores(
-    *,
-    model: torch.nn.Module,
-    loss_fn: torch.nn.Module,
-    patches: list[Any],
-    batch_size: int,
-    size_divisor: int,
-    device: torch.device,
-    num_workers: int,
-    input_channels: list[str] | None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not hasattr(loss_fn, "pixel_occupancy_from_output"):
-        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
+        return (
+            np.asarray([], dtype=np.float64),
+            np.asarray([], dtype=np.float64),
+            np.asarray([], dtype=bool),
+        )
     loader = make_loader(
         patches,
         batch_size,
@@ -227,7 +208,8 @@ def collect_pixel_scores(
         num_workers=num_workers,
         input_channels=input_channels,
     )
-    probs: list[np.ndarray] = []
+    model_scores: list[np.ndarray] = []
+    brightness_scores: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
@@ -236,12 +218,34 @@ def collect_pixel_scores(
             output = model(batch["x"])
             pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(output, batch)
             target_threshold = float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5))
-            valid = (pixel_valid.detach() > 0).cpu().numpy().reshape(-1)
-            probs.append(pixel_prob.detach().cpu().numpy().reshape(-1)[valid].astype(np.float32, copy=False))
-            targets.append((pixel_target.detach().cpu().numpy().reshape(-1)[valid] >= target_threshold))
-    if not probs:
-        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
-    return np.concatenate(probs).astype(np.float64, copy=False), np.concatenate(targets).astype(bool, copy=False)
+            valid_np = pixel_valid.detach().cpu().numpy()
+            model_np = pixel_prob.detach().cpu().numpy()
+            target_np = pixel_target.detach().cpu().numpy()
+            x_np = batch["x"].detach().cpu().numpy()
+            batch_channels = [str(name) for name in batch.get("input_channels", input_channels or [])]
+            brightness_idx = brightness_channel_index(input_channels, batch_channels)
+            for idx, meta in enumerate(batch["metadata"]):
+                height, width = [int(v) for v in meta["shape"]]
+                valid = valid_np[idx, 0, :height, :width] > 0
+                if not bool(np.any(valid)):
+                    continue
+                model_arr = model_np[idx, 0, :height, :width]
+                target_arr = target_np[idx, 0, :height, :width]
+                brightness_arr = x_np[idx, brightness_idx, :height, :width]
+                model_scores.append(model_arr[valid].astype(np.float32, copy=False))
+                brightness_scores.append(brightness_arr[valid].astype(np.float32, copy=False))
+                targets.append((target_arr[valid] >= target_threshold).astype(bool, copy=False))
+    if not model_scores:
+        return (
+            np.asarray([], dtype=np.float64),
+            np.asarray([], dtype=np.float64),
+            np.asarray([], dtype=bool),
+        )
+    return (
+        np.concatenate(model_scores).astype(np.float64, copy=False),
+        np.concatenate(brightness_scores).astype(np.float64, copy=False),
+        np.concatenate(targets).astype(bool, copy=False),
+    )
 
 
 def threshold_metrics(probs: np.ndarray, targets: np.ndarray, threshold: float) -> dict[str, Any]:
@@ -311,15 +315,116 @@ def average_precision_score(scores: np.ndarray, targets: np.ndarray) -> float | 
     return float(np.sum(precision * recall_delta))
 
 
-def gaussian_smooth_probability(prob: np.ndarray, valid: np.ndarray, *, sigma: float, truncate: float, eps: float = 1.0e-8) -> np.ndarray:
-    prob = np.asarray(prob, dtype=np.float32)
-    valid = (np.asarray(valid, dtype=np.float32) > 0).astype(np.float32)
-    if float(sigma) <= 0.0:
-        return np.clip(prob * valid, 0.0, 1.0).astype(np.float32, copy=False)
-    numerator = gaussian_filter(prob * valid, sigma=float(sigma), mode="constant", cval=0.0, truncate=float(truncate))
-    denominator = gaussian_filter(valid, sigma=float(sigma), mode="constant", cval=0.0, truncate=float(truncate))
-    smoothed = np.divide(numerator, denominator, out=np.zeros_like(numerator, dtype=np.float32), where=denominator > float(eps))
-    return np.clip(smoothed * valid, 0.0, 1.0).astype(np.float32, copy=False)
+def top_fraction_key(fraction: float) -> str:
+    percent = 100.0 * float(fraction)
+    return f"top_{percent:g}pct".replace(".", "p")
+
+
+def precision_at_top_fractions(
+    scores: np.ndarray,
+    targets: np.ndarray,
+    fractions: tuple[float, ...] = (0.001, 0.005, 0.01, 0.05, 0.1),
+) -> dict[str, Any]:
+    if scores.size == 0:
+        return {}
+    order = np.argsort(-scores, kind="mergesort")
+    sorted_targets = targets[order].astype(bool, copy=False)
+    positives = int(targets.sum())
+    rows: dict[str, Any] = {}
+    for fraction in fractions:
+        take = min(int(np.ceil(scores.size * float(fraction))), int(scores.size))
+        take = max(take, 1)
+        selected = sorted_targets[:take]
+        hit_count = int(selected.sum())
+        rows[top_fraction_key(float(fraction))] = {
+            "fraction": float(fraction),
+            "sample_count": int(take),
+            "precision": float(hit_count / max(take, 1)),
+            "recall": float(hit_count / max(positives, 1)),
+            "hit_count": int(hit_count),
+        }
+    return rows
+
+
+def calibration_bins(scores: np.ndarray, targets: np.ndarray, bin_count: int = 10) -> list[dict[str, Any]]:
+    if scores.size == 0:
+        return []
+    clipped = np.clip(scores.astype(np.float64, copy=False), 0.0, 1.0)
+    targets_float = targets.astype(np.float64, copy=False)
+    edges = np.linspace(0.0, 1.0, max(int(bin_count), 1) + 1, dtype=np.float64)
+    rows: list[dict[str, Any]] = []
+    for idx in range(len(edges) - 1):
+        left = float(edges[idx])
+        right = float(edges[idx + 1])
+        if idx == len(edges) - 2:
+            mask = (clipped >= left) & (clipped <= right)
+        else:
+            mask = (clipped >= left) & (clipped < right)
+        count = int(mask.sum())
+        if count <= 0:
+            rows.append({"bin_left": left, "bin_right": right, "count": 0})
+            continue
+        rows.append(
+            {
+                "bin_left": left,
+                "bin_right": right,
+                "count": count,
+                "mean_score": float(clipped[mask].mean()),
+                "empirical_presence_rate": float(targets_float[mask].mean()),
+            }
+        )
+    return rows
+
+
+def ranking_metrics(scores: np.ndarray, targets: np.ndarray, *, include_brier: bool) -> dict[str, Any]:
+    if scores.size == 0:
+        return {}
+    targets_bool = targets.astype(bool, copy=False)
+    positive_mask = targets_bool
+    negative_mask = ~targets_bool
+    result: dict[str, Any] = {
+        "sample_count": int(scores.size),
+        "positive_target_count": int(positive_mask.sum()),
+        "negative_target_count": int(negative_mask.sum()),
+        "positive_rate": float(positive_mask.mean()) if scores.size else None,
+        "average_precision": average_precision_score(scores.astype(np.float64, copy=False), targets_bool),
+        "score_mean_positive": float(scores[positive_mask].mean()) if bool(positive_mask.any()) else None,
+        "score_mean_negative": float(scores[negative_mask].mean()) if bool(negative_mask.any()) else None,
+        "precision_at_top": precision_at_top_fractions(scores.astype(np.float64, copy=False), targets_bool),
+    }
+    if include_brier:
+        clipped = np.clip(scores.astype(np.float64, copy=False), 0.0, 1.0)
+        result["brier"] = float(np.mean((clipped - targets_bool.astype(np.float64)) ** 2))
+    return result
+
+
+def ratio_or_none(numerator: Any, denominator: Any) -> float | None:
+    if numerator is None or denominator is None:
+        return None
+    denominator_float = float(denominator)
+    if abs(denominator_float) <= 1.0e-12:
+        return None
+    return float(float(numerator) / denominator_float)
+
+
+def ranking_lift(model_metrics: dict[str, Any], baseline_metrics: dict[str, Any]) -> dict[str, Any]:
+    lift: dict[str, Any] = {
+        "average_precision_ratio": ratio_or_none(
+            model_metrics.get("average_precision"),
+            baseline_metrics.get("average_precision"),
+        )
+    }
+    model_top = model_metrics.get("precision_at_top", {})
+    baseline_top = baseline_metrics.get("precision_at_top", {})
+    if isinstance(model_top, dict) and isinstance(baseline_top, dict):
+        for key, model_row in model_top.items():
+            baseline_row = baseline_top.get(key)
+            if isinstance(model_row, dict) and isinstance(baseline_row, dict):
+                lift[f"{key}_precision_ratio"] = ratio_or_none(
+                    model_row.get("precision"),
+                    baseline_row.get("precision"),
+                )
+    return lift
 
 
 def gaussian_radius_target(target: np.ndarray, valid: np.ndarray, *, sigma: float, radius_pixels: int) -> np.ndarray:
@@ -334,29 +439,6 @@ def gaussian_radius_target(target: np.ndarray, valid: np.ndarray, *, sigma: floa
     if int(radius_pixels) > 0:
         radius[distance > int(radius_pixels)] = 0.0
     return np.clip(radius * valid_bool.astype(np.float32), 0.0, 1.0).astype(np.float32, copy=False)
-
-
-def soft_probability_metrics(pred: np.ndarray, target: np.ndarray, target_binary: np.ndarray) -> dict[str, Any]:
-    if pred.size == 0:
-        return {}
-    eps = 1.0e-8
-    pred = pred.astype(np.float64, copy=False)
-    target = target.astype(np.float64, copy=False)
-    overlap = np.minimum(pred, target)
-    pred_sum = float(pred.sum())
-    target_sum = float(target.sum())
-    return {
-        "soft_brier": float(np.mean((pred - target) ** 2)),
-        "soft_mae": float(np.mean(np.abs(pred - target))),
-        "soft_target_sum": target_sum,
-        "soft_pred_sum": pred_sum,
-        "soft_target_explained": float(overlap.sum() / max(target_sum, eps)),
-        "soft_pred_matched": float(overlap.sum() / max(pred_sum, eps)),
-        "average_precision": average_precision_score(pred.astype(np.float32, copy=False), target_binary.astype(bool, copy=False)),
-        "target_positive_count": int(target_binary.sum()),
-        "target_negative_count": int((~target_binary).sum()),
-        "sample_count": int(pred.size),
-    }
 
 
 def collect_radius_scores(
@@ -375,10 +457,9 @@ def collect_radius_scores(
     truncate: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not hasattr(loss_fn, "pixel_occupancy_from_output"):
-        empty_scores = np.asarray([], dtype=np.float32)
-        empty_targets = np.asarray([], dtype=np.float32)
+        empty_scores = np.asarray([], dtype=np.float64)
         empty_binary = np.asarray([], dtype=bool)
-        return empty_scores, empty_targets, empty_binary
+        return empty_scores, empty_scores, empty_binary
     loader = make_loader(
         patches,
         batch_size,
@@ -387,8 +468,8 @@ def collect_radius_scores(
         num_workers=num_workers,
         input_channels=input_channels,
     )
-    pred_values: list[np.ndarray] = []
-    target_values: list[np.ndarray] = []
+    model_values: list[np.ndarray] = []
+    brightness_values: list[np.ndarray] = []
     binary_values: list[np.ndarray] = []
     model.eval()
     with torch.no_grad():
@@ -403,35 +484,32 @@ def collect_radius_scores(
             probs_np = pixel_prob.detach().cpu().numpy()
             targets_np = radius_source_target.detach().cpu().numpy()
             valid_np = pixel_valid.detach().cpu().numpy()
+            x_np = batch["x"].detach().cpu().numpy()
+            batch_channels = [str(name) for name in batch.get("input_channels", input_channels or [])]
+            brightness_idx = brightness_channel_index(input_channels, batch_channels)
             for idx, meta in enumerate(batch["metadata"]):
                 height, width = [int(v) for v in meta["shape"]]
                 prob_arr = probs_np[idx, 0, :height, :width]
                 target_arr = targets_np[idx, 0, :height, :width]
                 valid_arr = valid_np[idx, 0, :height, :width]
+                brightness_arr = x_np[idx, brightness_idx, :height, :width]
                 mask = valid_arr > 0
                 if not bool(np.any(mask)):
                     continue
-                radius_pred = gaussian_smooth_probability(
-                    prob_arr,
-                    valid_arr,
-                    sigma=float(sigma),
-                    truncate=float(truncate),
-                )
                 radius_target = gaussian_radius_target(
                     target_arr,
                     valid_arr,
                     sigma=float(sigma),
                     radius_pixels=int(radius_pixels),
                 )
-                pred_values.append(radius_pred[mask].astype(np.float32, copy=False))
-                target_flat = radius_target[mask].astype(np.float32, copy=False)
-                target_values.append(target_flat)
-                binary_values.append(target_flat >= float(target_threshold))
-    if not pred_values:
-        return np.asarray([], dtype=np.float32), np.asarray([], dtype=np.float32), np.asarray([], dtype=bool)
+                model_values.append(prob_arr[mask].astype(np.float32, copy=False))
+                brightness_values.append(brightness_arr[mask].astype(np.float32, copy=False))
+                binary_values.append((radius_target[mask] >= float(target_threshold)).astype(bool, copy=False))
+    if not model_values:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
     return (
-        np.concatenate(pred_values).astype(np.float32, copy=False),
-        np.concatenate(target_values).astype(np.float32, copy=False),
+        np.concatenate(model_values).astype(np.float64, copy=False),
+        np.concatenate(brightness_values).astype(np.float64, copy=False),
         np.concatenate(binary_values).astype(bool, copy=False),
     )
 
@@ -455,7 +533,7 @@ def evaluate_radius_probability_sweep(
     rows: dict[str, Any] = {}
     for sigma in sigmas:
         radius_pixels = int(np.ceil(max(float(sigma), 0.0) * max(float(truncate), 0.0)))
-        calibration_pred, calibration_target_soft, calibration_target_binary = collect_radius_scores(
+        calibration_model, _calibration_brightness, calibration_target_binary = collect_radius_scores(
             model=model,
             loss_fn=loss_fn,
             patches=calibration_patches,
@@ -469,7 +547,7 @@ def evaluate_radius_probability_sweep(
             target_threshold=float(target_threshold),
             truncate=float(truncate),
         )
-        eval_pred, eval_target_soft, eval_target_binary = collect_radius_scores(
+        eval_model, eval_brightness, eval_target_binary = collect_radius_scores(
             model=model,
             loss_fn=loss_fn,
             patches=eval_patches,
@@ -483,27 +561,34 @@ def evaluate_radius_probability_sweep(
             target_threshold=float(target_threshold),
             truncate=float(truncate),
         )
-        calibration_best = best_threshold_by_f1(calibration_pred, calibration_target_binary, int(threshold_grid_size))
+        calibration_best = best_threshold_by_f1(calibration_model, calibration_target_binary, int(threshold_grid_size))
         calibrated_eval = (
-            threshold_metrics(eval_pred, eval_target_binary, float(calibration_best["threshold"]))
+            threshold_metrics(eval_model, eval_target_binary, float(calibration_best["threshold"]))
             if calibration_best
             else {}
         )
-        fixed_eval = threshold_metrics(eval_pred, eval_target_binary, 0.5) if eval_pred.size else {}
+        fixed_eval = threshold_metrics(eval_model, eval_target_binary, 0.5) if eval_model.size else {}
+        model_ranking = ranking_metrics(eval_model, eval_target_binary, include_brier=True)
+        brightness_ranking = ranking_metrics(eval_brightness, eval_target_binary, include_brier=False)
         label = f"sigma_{str(float(sigma)).replace('.', 'p')}"
         rows[label] = {
             "sigma_pixels": float(sigma),
             "radius_pixels": int(radius_pixels),
             "target_threshold": float(target_threshold),
             "truncate": float(truncate),
-            "calibration_soft": soft_probability_metrics(calibration_pred, calibration_target_soft, calibration_target_binary),
-            "calibration_best_threshold": calibration_best,
-            "eval_soft": soft_probability_metrics(eval_pred, eval_target_soft, eval_target_binary),
-            "eval_fixed_threshold_0p5": fixed_eval,
-            "eval_calibrated_threshold": calibrated_eval,
+            "model_probability": model_ranking,
+            "brightness_baseline": brightness_ranking,
+            "model_vs_brightness_lift": ranking_lift(model_ranking, brightness_ranking),
+            "model_fixed_threshold_0p5": fixed_eval,
+            "model_calibrated_threshold": calibrated_eval,
+            "model_calibration": {
+                "method": "maximize_f1_on_calibration_split",
+                "threshold_grid_size": int(threshold_grid_size),
+                "best": calibration_best,
+            },
         }
     return {
-        "method": "smooth sigmoid probability with masked Gaussian; compare to distance-transform Gaussian radius target",
+        "method": "rank raw model probability and raw DNB brightness against AIS presence dilated by a Gaussian radius target",
         "sigmas": [float(value) for value in sigmas],
         "target_threshold": float(target_threshold),
         "threshold_grid_size": int(threshold_grid_size),
@@ -569,7 +654,7 @@ def main(argv: list[str] | None = None) -> int:
         input_channels=input_channels,
     )
 
-    calibration_probs, calibration_targets = collect_occupancy_scores(
+    presence_calibration_model, _presence_calibration_brightness, presence_calibration_targets = collect_presence_scores(
         model=model,
         loss_fn=loss_fn,
         patches=calibration_patches,
@@ -579,7 +664,7 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=int(args.num_workers),
         input_channels=input_channels,
     )
-    eval_probs, eval_targets = collect_occupancy_scores(
+    presence_eval_model, presence_eval_brightness, presence_eval_targets = collect_presence_scores(
         model=model,
         loss_fn=loss_fn,
         patches=eval_patches,
@@ -589,47 +674,38 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=int(args.num_workers),
         input_channels=input_channels,
     )
-    calibration_best = best_threshold_by_f1(calibration_probs, calibration_targets, int(args.threshold_grid_size))
-    calibrated_eval = (
-        threshold_metrics(eval_probs, eval_targets, float(calibration_best["threshold"]))
-        if calibration_best
-        else {}
-    )
-    fixed_eval = threshold_metrics(eval_probs, eval_targets, 0.5) if eval_probs.size else {}
-
-    pixel_calibration_probs, pixel_calibration_targets = collect_pixel_scores(
-        model=model,
-        loss_fn=loss_fn,
-        patches=calibration_patches,
-        batch_size=batch_size,
-        size_divisor=size_divisor,
-        device=device,
-        num_workers=int(args.num_workers),
-        input_channels=input_channels,
-    )
-    pixel_eval_probs, pixel_eval_targets = collect_pixel_scores(
-        model=model,
-        loss_fn=loss_fn,
-        patches=eval_patches,
-        batch_size=batch_size,
-        size_divisor=size_divisor,
-        device=device,
-        num_workers=int(args.num_workers),
-        input_channels=input_channels,
-    )
-    pixel_calibration_best = best_threshold_by_f1(
-        pixel_calibration_probs,
-        pixel_calibration_targets,
+    presence_calibration_best = best_threshold_by_f1(
+        presence_calibration_model,
+        presence_calibration_targets,
         int(args.threshold_grid_size),
     )
-    pixel_calibrated_eval = (
-        threshold_metrics(pixel_eval_probs, pixel_eval_targets, float(pixel_calibration_best["threshold"]))
-        if pixel_calibration_best
+    presence_calibrated_eval = (
+        threshold_metrics(presence_eval_model, presence_eval_targets, float(presence_calibration_best["threshold"]))
+        if presence_calibration_best
         else {}
     )
-    pixel_fixed_eval = threshold_metrics(pixel_eval_probs, pixel_eval_targets, 0.5) if pixel_eval_probs.size else {}
+    presence_fixed_eval = threshold_metrics(presence_eval_model, presence_eval_targets, 0.5) if presence_eval_model.size else {}
+    model_ranking = ranking_metrics(presence_eval_model, presence_eval_targets, include_brier=True)
+    brightness_ranking = ranking_metrics(presence_eval_brightness, presence_eval_targets, include_brier=False)
+    presence_probability = {
+        "target": {
+            "definition": "pixel target >= pixel_metric_target_threshold within valid sea mask",
+            "pixel_metric_target_threshold": float(getattr(loss_fn, "pixel_metric_target_threshold", 0.5)),
+        },
+        "model_probability": model_ranking,
+        "brightness_baseline": brightness_ranking,
+        "model_vs_brightness_lift": ranking_lift(model_ranking, brightness_ranking),
+        "model_fixed_threshold_0p5": presence_fixed_eval,
+        "model_calibrated_threshold": presence_calibrated_eval,
+        "model_calibration": {
+            "method": "maximize_f1_on_calibration_split",
+            "threshold_grid_size": int(args.threshold_grid_size),
+            "best": presence_calibration_best,
+            "reliability_bins": calibration_bins(presence_eval_model, presence_eval_targets, bin_count=10),
+        },
+    }
     radius_sigmas = parse_float_list(str(args.radius_sigmas))
-    radius_probability = (
+    radius_presence = (
         evaluate_radius_probability_sweep(
             model=model,
             loss_fn=loss_fn,
@@ -650,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
         "kind": "density_checkpoint_evaluation",
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_dir": str(run_dir),
@@ -667,22 +743,9 @@ def main(argv: list[str] | None = None) -> int:
             str(args.split): {key: value for key, value in eval_cache_metadata.items() if key != "patches"},
             str(args.calibration_split): {key: value for key, value in calibration_cache_metadata.items() if key != "patches"},
         },
-        "metrics_fixed_threshold_0p5": eval_metrics,
-        "occupancy_fixed_threshold_0p5": fixed_eval,
-        "pixel_fixed_threshold_0p5": pixel_fixed_eval,
-        "calibration": {
-            "method": "maximize_f1_on_calibration_split",
-            "threshold_grid_size": int(args.threshold_grid_size),
-            "best": calibration_best,
-        },
-        "metrics_calibrated_threshold": calibrated_eval,
-        "pixel_calibration": {
-            "method": "maximize_f1_on_calibration_split",
-            "threshold_grid_size": int(args.threshold_grid_size),
-            "best": pixel_calibration_best,
-        },
-        "pixel_metrics_calibrated_threshold": pixel_calibrated_eval,
-        "radius_probability": radius_probability,
+        "train_style_fixed_threshold_0p5": eval_metrics,
+        "presence_probability": presence_probability,
+        "radius_presence": radius_presence,
     }
     output_json = args.output_json
     if output_json is None:
@@ -694,13 +757,9 @@ def main(argv: list[str] | None = None) -> int:
         json.dumps(
             {
                 "output_json": str(output_json),
-                "fixed": eval_metrics,
-                "calibrated": calibrated_eval,
-                "calibration": calibration_best,
-                "pixel_fixed": pixel_fixed_eval,
-                "pixel_calibrated": pixel_calibrated_eval,
-                "pixel_calibration": pixel_calibration_best,
-                "radius_probability": radius_probability,
+                "train_style_fixed_threshold_0p5": eval_metrics,
+                "presence_probability": presence_probability,
+                "radius_presence": radius_presence,
             },
             ensure_ascii=False,
             indent=2,

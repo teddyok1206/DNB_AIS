@@ -1,25 +1,18 @@
 # Final Report Prep - IEEE-Style EESRL Report
 
-This document keeps the final-report plan aligned with the active DNB/AIS density pipeline.
+This document keeps the final-report plan aligned with the active DNB/AIS probability-map pipeline.
 
 ## Important Pivot
 
-The midterm report was written around a DRUID + GAT direction. That path is historical only.
+The midterm DRUID + GAT direction is historical only.
 
 The active final-report method is now:
 
 ```text
-PH-assisted recursive exact-cover patching + PixelBinaryOccupancyUNet probability field
+PH-assisted recursive exact-cover patching + PixelProbabilityUNet ship-presence probability map
 ```
 
-The main label is a radius-tolerant probability field seeded by AIS-derived raw count pixels:
-
-```text
-Y_seed = 1[raw_count > 0]
-Y_field = exp(-0.5 * distance_to_nearest(Y_seed)^2 / sigma_pixels^2)
-```
-
-Exact AIS-pixel hit detection, smoothed count-density maps, brightness baselines, and count regression are secondary or archived material unless explicitly revived.
+The project goal is not integer vessel counting. The goal is to show that high values in the learned probability map correspond to ship presence more reliably than high values in raw VIIRS DNB brightness.
 
 ## Active Method Summary
 
@@ -29,9 +22,10 @@ data: 2025 JPSS-2/VIIRS DNB GeoTIFF + AIS-derived GeoJSON point/bbox supervision
 preprocessing: arctan-encoded DNB brightness, KR EEZ + 12 nm sea mask, day-level split.
 structure prior: H0 persistent-homology anchors from encoded brightness.
 partitioning: PH anchors first, recursive PH rerun for oversized anchors, fallback tiles for exact valid-sea coverage.
-model: PixelBinaryOccupancyUNet.
-output: independent per-pixel ship-proximity probability.
+model: PixelProbabilityUNet.
+output: independent per-pixel ship-presence probability.
 training target: Gaussian proximity probability field seeded by raw_count > 0.
+evaluation baseline: raw DNB brightness ranked against the same AIS presence target.
 ```
 
 Current input channels from `configs/dnb_density_unet_probability_field_recursive_ph_20260610.json`:
@@ -42,7 +36,7 @@ Current input channels from `configs/dnb_density_unet_probability_field_recursiv
 2 ph_seed_map
 ```
 
-Parent/child PH masks are computed only transiently during proposal/target construction. Soft attention and anchor lifetime maps are removed from the active path. None of these are U-Net input channels or batch tensors.
+Parent/child PH masks are computed only transiently during partition construction. Soft attention, anchor lifetime maps, count-density heads, and patch O/X auxiliary objectives are removed from the active path.
 
 ## Core Equations
 
@@ -51,34 +45,22 @@ encoded = (2 / pi) * arctan(radiance / 1e-9)
 Y_seed = 1[raw_count_pixel > 0] * valid_owner_mask
 Y_field = exp(-0.5 * distance_to_nearest(Y_seed)^2 / sigma_pixels^2) * valid_owner_mask
 P_pixel = sigmoid(pixel_logits) * valid_owner_mask
-O_target = 1[sum(Y_seed) > 0]
-P_patch = sigmoid(occupancy_logit)
 ```
-
-Auxiliary radius-tolerant evaluation:
-
-```text
-P_radius = masked_gaussian_smooth(P_pixel, sigma)
-Y_radius = exp(-0.5 * distance_to_nearest_positive_AIS_pixel^2 / sigma^2)
-```
-
-This remains a post-hoc tolerance sweep. It should be reported as probability-field behavior, not as integer-count accuracy.
 
 Main loss:
 
 ```text
-L = lambda_pixel * BCEWithLogits(pixel_logits, Y_field)
-  + lambda_patch * BCEWithLogits(occupancy_logit, O_target)
-  + lambda_dice * Dice(pixel_logits, Y_field)   # currently disabled
+L = BCEWithLogits(pixel_logits, Y_field; pos_weight)
 ```
 
-Current config:
+Current active config:
 
 ```text
-lambda_pixel = 0.9
-lambda_patch = 0.1
+model.name = PixelProbabilityUNet
+loss.name = radius_probability_loss
+lambda_pixel = 1.0
+lambda_patch = 0.0
 lambda_dice = 0.0
-pixel_pos_weight = 8.0
 sigma_pixels = 4.0
 radius_pixels = 12
 field_target_threshold = 0.25
@@ -87,10 +69,51 @@ field_target_threshold = 0.25
 Target note:
 
 ```text
-DNB brightness is physically diffuse and AIS-to-DNB pixel alignment is brittle.
-AIS labels remain exact seeds, but the supervised target is a proximity probability field.
+AIS labels remain exact seeds.
+The supervised target is a proximity probability field because DNB pixels are coarse and AIS-to-DNB alignment is brittle.
 This is not count-mass smoothing and should not be interpreted as integer vessel density.
 ```
+
+## Evaluation Policy
+
+Primary question:
+
+```text
+Does model probability rank AIS-positive pixels above AIS-negative pixels better than raw DNB brightness does?
+```
+
+Primary metrics:
+
+```text
+presence_probability.model_probability.average_precision
+presence_probability.brightness_baseline.average_precision
+presence_probability.model_vs_brightness_lift.average_precision_ratio
+presence_probability.model_probability.precision_at_top.top_1pct.precision
+presence_probability.model_probability.brier
+presence_probability.model_calibrated_threshold.f1
+```
+
+Radius-tolerant sensitivity analysis:
+
+```text
+radius_presence.by_sigma.*.model_probability.average_precision
+radius_presence.by_sigma.*.brightness_baseline.average_precision
+radius_presence.by_sigma.*.model_vs_brightness_lift.average_precision_ratio
+```
+
+Retired metrics and objectives:
+
+```text
+ship-count regression
+pred_target_ratio
+soft_target_explained
+soft_pred_matched
+spatial_overlap_mean_positive
+patch-level occupancy headline metrics
+sum-preserving density/count mass
+```
+
+Brightness is a score baseline, not a calibrated probability. Report Brier/reliability bins for the model probability map, not for raw brightness unless a separate calibration model is explicitly fitted.
 
 ## Proposed Final Report Outline
 
@@ -102,8 +125,8 @@ Include:
 VIIRS DNB low-resolution nighttime vessel-light overlap
 AIS-derived supervision
 PH-assisted recursive exact-cover patch construction
-PixelBinaryOccupancyUNet per-pixel ship-proximity probability mapping
-final train/validation/test field metrics
+PixelProbabilityUNet per-pixel ship-presence probability mapping
+model probability vs raw brightness ranking results
 ```
 
 ### 2. Introduction
@@ -147,10 +170,11 @@ Subsections:
 4.4 PH-assisted exact-cover partitioning
 4.5 Recursive PH subdivision for oversized anchors
 4.6 PH feature-channel construction
-4.7 PixelBinaryOccupancyUNet architecture
-4.8 Probability-field loss and auxiliary patch O/X head
-4.9 Patch inference and full-scene merge
-4.10 Deferred count head extension
+4.7 PixelProbabilityUNet architecture
+4.8 Radius probability-field loss
+4.9 Presence-ranking evaluation against raw brightness baseline
+4.10 Patch inference and full-scene merge
+4.11 Deferred count prediction extension
 ```
 
 ### 5. Experiments
@@ -161,29 +185,8 @@ Report:
 hardware: Apple Silicon Mac, MPS backend
 config: configs/dnb_density_unet_probability_field_recursive_ph_20260610.json
 split: outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv
-checkpoint policy: last, best validation loss, best validation field F1
+checkpoint policy: best validation field F1 plus final presence-ranking evaluation
 threshold policy: fixed 0.5 plus validation-calibrated threshold for field F1
-```
-
-Primary metrics:
-
-```text
-pixel_precision
-pixel_recall
-pixel_f1
-pixel_iou
-pixel_brier
-radius_probability average precision
-soft target explained
-soft prediction matched
-```
-
-Secondary diagnostics:
-
-```text
-occupancy_f1: patch auxiliary behavior only
-spatial_overlap_mean_positive: retired softmax-style localization diagnostic only
-pred_target_ratio: probability-mass vs positive-pixel-count diagnostic, not ship-count error
 ```
 
 ### 6. Results
@@ -196,24 +199,19 @@ Figure 2: VIIRS DNB scene + KR sea mask
 Figure 3: PH parent / recursive child / fallback partition visualization
 Figure 4: patch input channels with PH features
 Figure 5: target probability field, predicted probability field, thresholded field, error map
-Figure 6: train/validation loss and pixel F1 curves
-Figure 7: representative success/failure test patches or scenes
+Figure 6: model probability vs raw brightness precision-recall curves
+Figure 7: reliability diagram for model probability
+Figure 8: representative success/failure test patches or scenes
 ```
 
 Required tables:
 
 ```text
-Table IV: final checkpoint metrics on train/val/test
-Table V: fixed 0.5 threshold vs validation-calibrated threshold on test
+Table IV: final checkpoint presence-ranking metrics on train/val/test
+Table V: raw brightness baseline vs model probability AP and Top-1% precision
+Table VI: fixed 0.5 threshold vs validation-calibrated threshold on test
+Table VII: radius_presence sigma sweep
 ```
-
-If a baseline is included, label it clearly as archived/secondary:
-
-```text
-rule-based brightness threshold baseline
-```
-
-Do not present the retired occupancy/spatial-softmax model as the active method.
 
 ### 7. Discussion
 
@@ -222,31 +220,13 @@ Discuss:
 ```text
 why probability fields are better posed than exact AIS-pixel hits at current resolution
 why this target is proximity probability, not count-density smoothing
+why raw brightness is the correct baseline for the project claim
 why PH is a partition/input prior rather than a label censor
 how recursive PH addresses oversized patches
 limitations from AIS supervision, DNB blooming, cloud/bright artifacts, and sparse positives
-what would justify reintroducing count prediction later
+what evidence would justify reintroducing count prediction later
 ```
 
-### 8. Conclusion
+## Citation Maintenance
 
-State:
-
-```text
-The completed pipeline maps DNB and PH-derived features to a per-pixel vessel-proximity probability field.
-It is evaluated as probability-field localization, not as exact AIS-pixel detection or final integer vessel counting.
-```
-
-## Citation File
-
-Use `docs/FINAL_REPORT_CITATIONS_IEEE.md`. Update that file before changing references.
-
-## Next Report-Readiness Tasks
-
-```text
-1. finish the active probability-field recursive PH experiment
-2. freeze best validation field-F1 test metrics with fixed and calibrated thresholds
-3. generate qualitative target-field/probability/error panels
-4. prepare final metric tables
-5. draft the final LaTeX report from this outline
-```
+When adding final-report citations, update `docs/FINAL_REPORT_CITATIONS_IEEE.md` first. Keep references tied to the active DNB/AIS probability-map pipeline in the core list; retired GAT/SAR/radar/count-density paths should stay historical unless explicitly discussed.
