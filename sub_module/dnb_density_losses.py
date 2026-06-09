@@ -719,6 +719,21 @@ class OccupancyOnlyLossConfig:
     report_components: bool = True
 
 
+@dataclass(frozen=True)
+class SpatialOnlyLossConfig:
+    name: str = "spatial_only_loss"
+    spatial_loss: str = "kl"
+    spatial_temperature: float = 1.0
+    min_target_count_for_spatial: float = 1.0e-6
+    lifetime_weight_mode: str = "none"
+    lifetime_weight_strength: float = 0.0
+    lifetime_weight_min: float = 0.25
+    lifetime_weight_max: float = 2.0
+    lifetime_weight_normalize: bool = True
+    eps: float = 1.0e-8
+    report_components: bool = True
+
+
 def occupancy_spatial_loss_config_from_dict(config: dict[str, Any] | None) -> OccupancySpatialLossConfig:
     if not config:
         return OccupancySpatialLossConfig()
@@ -733,6 +748,14 @@ def occupancy_only_loss_config_from_dict(config: dict[str, Any] | None) -> Occup
     allowed = {item.name for item in fields(OccupancyOnlyLossConfig)}
     values = {key: value for key, value in dict(config).items() if key in allowed}
     return OccupancyOnlyLossConfig(**values)
+
+
+def spatial_only_loss_config_from_dict(config: dict[str, Any] | None) -> SpatialOnlyLossConfig:
+    if not config:
+        return SpatialOnlyLossConfig()
+    allowed = {item.name for item in fields(SpatialOnlyLossConfig)}
+    values = {key: value for key, value in dict(config).items() if key in allowed}
+    return SpatialOnlyLossConfig(**values)
 
 
 class OccupancySpatialLoss(nn.Module):
@@ -936,9 +959,101 @@ class OccupancyOnlyLoss(nn.Module):
         return occupancy
 
 
+class SpatialOnlyLoss(nn.Module):
+    """Positive-patch spatial distribution loss with no patch O/X objective."""
+
+    def __init__(self, config: SpatialOnlyLossConfig | None = None) -> None:
+        super().__init__()
+        self.config = config or SpatialOnlyLossConfig()
+        self.last_components: dict[str, float] = {}
+
+    def target_count(self, batch: dict[str, Any]) -> torch.Tensor:
+        target_mass = _apply_mask(batch["target"], batch["valid_mask"])
+        return target_mass.flatten(1).sum(dim=1)
+
+    def target_density_from_batch(self, batch: dict[str, Any]) -> torch.Tensor:
+        target_mass = _apply_mask(batch["target"], batch["valid_mask"])
+        target_count = target_mass.flatten(1).sum(dim=1).reshape(-1, 1, 1, 1)
+        positive = (target_count > float(self.config.min_target_count_for_spatial)).to(dtype=target_mass.dtype)
+        target_prob = target_mass / torch.clamp(target_count, min=float(self.config.eps))
+        return target_prob * positive
+
+    def density_from_output(self, output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
+        if torch.is_tensor(output):
+            return output * batch["valid_mask"]
+        if "spatial_logits" not in output:
+            raise ValueError("spatial_only_loss requires spatial_logits")
+        pred_prob = _spatial_prob_from_logits(
+            output["spatial_logits"],
+            batch["valid_mask"],
+            temperature=float(self.config.spatial_temperature),
+            eps=float(self.config.eps),
+        )
+        # Metrics are defined only where a positive spatial target exists.
+        positive = (self.target_count(batch).reshape(-1, 1, 1, 1) > float(self.config.min_target_count_for_spatial)).to(dtype=pred_prob.dtype)
+        return pred_prob * positive
+
+    def forward(self, output: torch.Tensor | dict[str, torch.Tensor], batch: dict[str, Any]) -> torch.Tensor:
+        if torch.is_tensor(output):
+            raise ValueError("spatial_only_loss requires a dict output with spatial_logits")
+        if "spatial_logits" not in output:
+            raise ValueError("spatial_only_loss requires spatial_logits")
+        cfg = self.config
+        target = batch["target"]
+        valid_mask = batch["valid_mask"]
+        sample_weight = _lifetime_sample_weight(
+            batch,
+            mode=cfg.lifetime_weight_mode,
+            strength=float(cfg.lifetime_weight_strength),
+            min_weight=float(cfg.lifetime_weight_min),
+            max_weight=float(cfg.lifetime_weight_max),
+            normalize=bool(cfg.lifetime_weight_normalize),
+            eps=float(cfg.eps),
+            reference=target,
+        )
+        target_count = self.target_count(batch)
+        target_mass = _apply_mask(target, valid_mask)
+        target_prob = target_mass / torch.clamp(target_count.reshape(-1, 1, 1, 1), min=float(cfg.eps))
+        pred_prob = _spatial_prob_from_logits(
+            output["spatial_logits"],
+            valid_mask,
+            temperature=float(cfg.spatial_temperature),
+            eps=float(cfg.eps),
+        )
+        normalized = str(cfg.spatial_loss).lower()
+        if normalized in {"kl", "kld", "kl_div"}:
+            spatial_element = target_prob * (
+                torch.log(torch.clamp(target_prob, min=float(cfg.eps)))
+                - torch.log(torch.clamp(pred_prob, min=float(cfg.eps)))
+            )
+        elif normalized in {"ce", "cross_entropy", "nll"}:
+            spatial_element = -target_prob * torch.log(torch.clamp(pred_prob, min=float(cfg.eps)))
+        else:
+            raise ValueError(f"Unsupported spatial loss: {cfg.spatial_loss}")
+        spatial_per_sample = spatial_element.flatten(1).sum(dim=1)
+        positive = (target_count > float(cfg.min_target_count_for_spatial)).to(dtype=target.dtype)
+        spatial_weight = positive * sample_weight
+        spatial = (spatial_per_sample * spatial_weight).sum() / torch.clamp(spatial_weight.sum(), min=1.0)
+        if bool(cfg.report_components):
+            self.last_components = {
+                "loss_total": float(spatial.detach().cpu()),
+                "loss_spatial": float(spatial.detach().cpu()),
+                "positive_patch_weight_sum": float(spatial_weight.detach().sum().cpu()),
+                "positive_patch_mean": float(positive.detach().mean().cpu()),
+                "target_count_mean_raw": float(target_count.detach().mean().cpu()),
+                "lifetime_weight_mode": 0.0 if str(cfg.lifetime_weight_mode).lower() in {"none", "off", "false", "0"} else 1.0,
+                "lifetime_weight_strength": float(cfg.lifetime_weight_strength),
+                "lifetime_weight_mean": float(sample_weight.detach().mean().cpu()),
+                "lifetime_weight_max": float(sample_weight.detach().max().cpu()),
+            }
+        return spatial
+
+
 def build_density_loss(
-    config: dict[str, Any] | DensityLossConfig | CountSpatialLossConfig | OccupancySpatialLossConfig | OccupancyOnlyLossConfig | None = None,
+    config: dict[str, Any] | DensityLossConfig | CountSpatialLossConfig | OccupancySpatialLossConfig | OccupancyOnlyLossConfig | SpatialOnlyLossConfig | None = None,
 ) -> nn.Module:
+    if isinstance(config, SpatialOnlyLossConfig):
+        return SpatialOnlyLoss(config)
     if isinstance(config, OccupancyOnlyLossConfig):
         return OccupancyOnlyLoss(config)
     if isinstance(config, OccupancySpatialLossConfig):
@@ -947,6 +1062,13 @@ def build_density_loss(
         return CountSpatialDensityLoss(config)
     if isinstance(config, DensityLossConfig):
         return StructuredDensityLoss(config)
+    if isinstance(config, dict) and str(config.get("name", "structured_density_loss")).lower() in {
+        "spatial_only_loss",
+        "spatial_only",
+        "distribution_only",
+        "ship_spatial",
+    }:
+        return SpatialOnlyLoss(spatial_only_loss_config_from_dict(config))
     if isinstance(config, dict) and str(config.get("name", "structured_density_loss")).lower() in {
         "occupancy_only_loss",
         "occupancy_only",

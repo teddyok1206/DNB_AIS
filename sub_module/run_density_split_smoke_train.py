@@ -571,6 +571,8 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
         return prob * torch.sigmoid(output["occupancy_logit"].reshape(-1, 1, 1, 1))
     if "occupancy_logits" in output:
         return prob * torch.sigmoid(output["occupancy_logits"].reshape(-1, 1, 1, 1))
+    if "spatial_logits" in output:
+        return prob
     raise ValueError("Model output dict must contain count or occupancy_logit")
 
 
