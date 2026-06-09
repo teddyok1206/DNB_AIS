@@ -16,6 +16,7 @@ import torch
 from .dnb_density_common import density_patch_collate, move_density_batch_to_device
 from .dnb_density_losses import build_density_loss
 from .dnb_density_models import build_density_model
+from .dnb_density_patch_pickle_cache import load_patch_split_cache, split_cache_path
 from .dnb_density_preview import preview_cmap_for_name, preview_limits_for_name, save_panel_grid
 from .run_density_split_smoke_train import (
     SceneSplitRecord,
@@ -50,6 +51,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="last",
     )
     parser.add_argument("--checkpoint-path", type=Path, default=None, help="Explicit checkpoint override.")
+    parser.add_argument(
+        "--patch-cache-dir",
+        type=Path,
+        default=None,
+        help="Optional density patch cache override. Defaults to run_summary.patch_cache.dir when present.",
+    )
     return parser
 
 
@@ -131,6 +138,51 @@ def resolve_checkpoint_path(run_dir: Path, summary: dict[str, Any], *, checkpoin
     if fallback:
         return Path(fallback).expanduser().resolve()
     return (run_dir / "checkpoints" / "checkpoint_last.pt").resolve()
+
+
+def resolve_patch_cache_dir(summary: dict[str, Any], split: str, explicit_cache_dir: Path | None) -> Path | None:
+    if explicit_cache_dir is not None:
+        cache_dir = explicit_cache_dir.expanduser().resolve()
+        cache_path = split_cache_path(cache_dir, split)
+        if not cache_path.exists():
+            raise FileNotFoundError(f"Missing density patch cache for split={split}: {cache_path}")
+        return cache_dir
+
+    value = summary.get("patch_cache", {}).get("dir")
+    if not value:
+        return None
+    cache_dir = Path(value).expanduser().resolve()
+    if split_cache_path(cache_dir, split).exists():
+        return cache_dir
+    return None
+
+
+def load_patches_for_split(
+    *,
+    run_dir: Path,
+    summary: dict[str, Any],
+    config: dict[str, Any],
+    split: str,
+    limit: int,
+    explicit_cache_dir: Path | None,
+) -> tuple[list[Any], str]:
+    cache_dir = resolve_patch_cache_dir(summary, split, explicit_cache_dir)
+    if cache_dir is not None:
+        patches, _metadata = load_patch_split_cache(cache_dir, split)
+        return patches[:limit], f"patch_cache:{cache_dir}"
+
+    filtered_split = run_dir / "filtered_scene_split.csv"
+    records = read_filtered_records(filtered_split, split)
+    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
+    ns = namespace_from_summary(summary)
+    patches = []
+    for record in records:
+        result = build_scene(record, config=config, args=ns, resolver=resolver)
+        if not result.excluded_reason:
+            patches.extend(result.patches)
+            if len(patches) >= limit:
+                break
+    return patches[:limit], f"filtered_scene_split:{filtered_split}"
 
 
 def robust_max(arrays: list[np.ndarray], eps: float = 1.0e-8) -> float:
@@ -249,18 +301,16 @@ def main(argv: list[str] | None = None) -> int:
     model = build_model_from_checkpoint(config, checkpoint, device)
     loss_fn = build_density_loss(loss_config_from_config(config)).to(device)
 
-    filtered_split = run_dir / "filtered_scene_split.csv"
-    records = read_filtered_records(filtered_split, str(args.split))
-    resolver = GroundTruthResolver(STEP3 / "bboxes_JPSS-2")
-    ns = namespace_from_summary(summary)
-    patches = []
-    for record in records:
-        result = build_scene(record, config=config, args=ns, resolver=resolver)
-        if not result.excluded_reason:
-            patches.extend(result.patches)
-    patches = patches[: max(int(args.limit), 0)]
-
     output_dir = args.output_dir.expanduser().resolve() if args.output_dir else run_dir / "enhanced_previews"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    patches, patch_source = load_patches_for_split(
+        run_dir=run_dir,
+        summary=summary,
+        config=config,
+        split=str(args.split),
+        limit=max(int(args.limit), 0),
+        explicit_cache_dir=args.patch_cache_dir,
+    )
     size_divisor = int(config.get("patching", {}).get("size_divisor", 16))
     input_channels = input_channels_from_config(config)
     rows: list[dict[str, Any]] = []
@@ -298,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
                     "config_source": config_source,
                     "checkpoint_path": str(checkpoint_path),
                     "checkpoint_kind": str(args.checkpoint_kind),
+                    "patch_source": patch_source,
                     **metrics,
                 }
             )
@@ -312,6 +363,7 @@ def main(argv: list[str] | None = None) -> int:
             "config_source",
             "checkpoint_path",
             "checkpoint_kind",
+            "patch_source",
             "pred_sum",
             "target_sum",
             "target_explained",
@@ -322,7 +374,18 @@ def main(argv: list[str] | None = None) -> int:
         writer.writeheader()
         writer.writerows(rows)
 
-    print(json.dumps({"output_dir": str(output_dir), "preview_count": len(rows), "metrics_csv": str(metrics_path)}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "output_dir": str(output_dir),
+                "preview_count": len(rows),
+                "metrics_csv": str(metrics_path),
+                "patch_source": patch_source,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
