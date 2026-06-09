@@ -48,6 +48,11 @@ class ScenePartitionConfig:
     hierarchical_child_max_nodes: int = 2048
     hierarchical_child_max_candidates_per_parent: int = 64
     hierarchical_keep_large_parent: bool = False
+    hierarchical_recursive_enabled: bool = False
+    hierarchical_recursive_max_depth: int = 1
+    hierarchical_recursive_target_max_height: int = 0
+    hierarchical_recursive_target_max_width: int = 0
+    hierarchical_recursive_target_max_pixels: int = 0
 
 
 @dataclass(frozen=True)
@@ -135,6 +140,13 @@ def _is_large_parent(
         checks.append(height >= int(partition_config.hierarchical_large_min_height))
     if int(partition_config.hierarchical_large_min_width) > 0:
         checks.append(width >= int(partition_config.hierarchical_large_min_width))
+    if bool(partition_config.hierarchical_recursive_enabled):
+        if int(partition_config.hierarchical_recursive_target_max_pixels) > 0:
+            checks.append(owner_pixels > int(partition_config.hierarchical_recursive_target_max_pixels))
+        if int(partition_config.hierarchical_recursive_target_max_height) > 0:
+            checks.append(height > int(partition_config.hierarchical_recursive_target_max_height))
+        if int(partition_config.hierarchical_recursive_target_max_width) > 0:
+            checks.append(width > int(partition_config.hierarchical_recursive_target_max_width))
     return bool(any(checks))
 
 
@@ -221,6 +233,8 @@ def _cluster_catalogue_rows(clusters: list[PHCluster]) -> list[dict[str, Any]]:
                 "gt_sum": float(cluster.gt_sum),
                 "contour": cluster.contour_rc,
                 "source": "hierarchical_ph_child",
+                "hierarchy_depth": int(getattr(cluster, "hierarchy_depth", 0)),
+                "hierarchy_parent_cluster_id": getattr(cluster, "hierarchy_parent_cluster_id", None),
             }
         )
     return rows
@@ -253,18 +267,26 @@ def build_hierarchical_child_store(
     child_clusters: list[PHCluster] = []
     large_parent_count = 0
     large_parent_with_children = 0
+    recursive_split_count = 0
+    max_depth = max(
+        1,
+        int(partition_config.hierarchical_recursive_max_depth)
+        if bool(partition_config.hierarchical_recursive_enabled)
+        else 1,
+    )
 
-    for parent in parents:
-        core_rc = _expand_rc(
-            parent.bbox_rc,
-            scene.shape,
-            padding_pixels=int(partition_config.anchor_padding_pixels),
-        )
+    def detect_children_in_core(
+        core_rc: tuple[int, int, int, int],
+        *,
+        depth: int,
+        parent_cluster_id: int | None,
+    ) -> list[PHCluster]:
+        nonlocal next_id, recursive_split_count
         r0, r1, c0, c1 = [int(v) for v in core_rc]
         owner_core = domain[r0 : r1 + 1, c0 : c1 + 1]
         if not _is_large_parent(core_rc, owner_core, partition_config):
-            continue
-        large_parent_count += 1
+            return []
+        recursive_split_count += 1
 
         local_image = np.asarray(scene.image[r0 : r1 + 1, c0 : c1 + 1], dtype=np.float32)
         local_gt = gt[r0 : r1 + 1, c0 : c1 + 1]
@@ -278,24 +300,75 @@ def build_hierarchical_child_store(
             width=int(local_image.shape[1]),
         )
         local_store = detector.build_store(local_scene, local_gt, valid_mask=owner_core)
-        local_children = sorted(local_store.clusters, key=lambda item: (item.lifetime, item.node_count), reverse=True)
+        local_children = sorted(local_store.clusters, key=lambda item: (item.lifetime, -item.node_count), reverse=True)
         max_children = int(partition_config.hierarchical_child_max_candidates_per_parent)
         if max_children > 0:
             local_children = local_children[:max_children]
+
+        generated: list[PHCluster] = []
+        for local_child in local_children:
+            child = _offset_cluster_to_global(
+                local_child,
+                cluster_id=next_id,
+                scene=scene,
+                gt_count_map=gt,
+                row_offset=r0,
+                col_offset=c0,
+            )
+            setattr(child, "hierarchy_depth", int(depth))
+            setattr(child, "hierarchy_parent_cluster_id", None if parent_cluster_id is None else int(parent_cluster_id))
+            next_id += 1
+            child_core = _expand_rc(
+                child.bbox_rc,
+                scene.shape,
+                padding_pixels=int(partition_config.hierarchical_child_anchor_padding_pixels),
+            )
+            cr0, cr1, cc0, cc1 = [int(v) for v in child_core]
+            child_core = (
+                max(cr0, r0),
+                min(cr1, r1),
+                max(cc0, c0),
+                min(cc1, c1),
+            )
+            if tuple(child_core) == tuple(core_rc):
+                child_is_large = True
+            else:
+                cr0, cr1, cc0, cc1 = [int(v) for v in child_core]
+                child_is_large = _is_large_parent(
+                    child_core,
+                    domain[cr0 : cr1 + 1, cc0 : cc1 + 1],
+                    partition_config,
+                )
+
+            if bool(partition_config.hierarchical_recursive_enabled) and child_is_large:
+                if int(depth) < int(max_depth) and tuple(child_core) != tuple(core_rc):
+                    generated.extend(
+                        detect_children_in_core(
+                            child_core,
+                            depth=int(depth) + 1,
+                            parent_cluster_id=int(child.cluster_id),
+                        )
+                    )
+                continue
+
+            generated.append(child)
+        return generated
+
+    for parent in parents:
+        core_rc = _expand_rc(
+            parent.bbox_rc,
+            scene.shape,
+            padding_pixels=int(partition_config.anchor_padding_pixels),
+        )
+        r0, r1, c0, c1 = [int(v) for v in core_rc]
+        owner_core = domain[r0 : r1 + 1, c0 : c1 + 1]
+        if not _is_large_parent(core_rc, owner_core, partition_config):
+            continue
+        large_parent_count += 1
+        local_children = detect_children_in_core(core_rc, depth=1, parent_cluster_id=int(parent.cluster_id))
         if local_children:
             large_parent_with_children += 1
-        for local_child in local_children:
-            child_clusters.append(
-                _offset_cluster_to_global(
-                    local_child,
-                    cluster_id=next_id,
-                    scene=scene,
-                    gt_count_map=gt,
-                    row_offset=r0,
-                    col_offset=c0,
-                )
-            )
-            next_id += 1
+            child_clusters.extend(local_children)
 
     catalogue = pd.DataFrame(_cluster_catalogue_rows(child_clusters))
     metadata = {
@@ -303,6 +376,12 @@ def build_hierarchical_child_store(
         "large_parent_count": int(large_parent_count),
         "large_parent_with_children": int(large_parent_with_children),
         "child_cluster_count": int(len(child_clusters)),
+        "recursive_enabled": bool(partition_config.hierarchical_recursive_enabled),
+        "recursive_max_depth": int(max_depth),
+        "recursive_split_count": int(recursive_split_count),
+        "recursive_target_max_height": int(partition_config.hierarchical_recursive_target_max_height),
+        "recursive_target_max_width": int(partition_config.hierarchical_recursive_target_max_width),
+        "recursive_target_max_pixels": int(partition_config.hierarchical_recursive_target_max_pixels),
         "child_detection_threshold": float(partition_config.hierarchical_child_detection_threshold),
         "child_analysis_threshold": float(partition_config.hierarchical_child_analysis_threshold),
         "child_lifetime_limit_fraction": float(partition_config.hierarchical_child_lifetime_limit_fraction),
@@ -320,7 +399,15 @@ def _clusters_inside_core(
         cr0, cr1, cc0, cc1 = [int(v) for v in cluster.bbox_rc]
         if cr0 >= r0 and cr1 <= r1 and cc0 >= c0 and cc1 <= c1:
             inside.append(cluster)
-    return sorted(inside, key=lambda item: (item.lifetime, item.node_count), reverse=True)
+    return sorted(
+        inside,
+        key=lambda item: (
+            int(getattr(item, "hierarchy_depth", 0)),
+            float(item.lifetime),
+            -int(item.node_count),
+        ),
+        reverse=True,
+    )
 
 
 def build_scene_partitions(

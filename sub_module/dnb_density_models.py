@@ -316,6 +316,75 @@ class OccupancySpatialUNet(nn.Module):
         }
 
 
+class PixelBinaryOccupancyUNet(nn.Module):
+    """U-Net for hard pixel-level ship occupancy plus auxiliary patch O/X.
+
+    The pixel head emits independent logits for each valid pixel. It is not a
+    spatial softmax and does not force positive patches to allocate unit mass.
+    """
+
+    def __init__(
+        self,
+        in_channels: int = 7,
+        out_channels: int = 1,
+        base_channels: int = 32,
+        depth: int = 4,
+        occupancy_hidden_channels: int | None = None,
+        dropout: float = 0.0,
+    ) -> None:
+        super().__init__()
+        depth = max(int(depth), 2)
+        base_channels = int(base_channels)
+        channels = [base_channels * (2**idx) for idx in range(depth)]
+        self.config = {
+            "name": "PixelBinaryOccupancyUNet",
+            "in_channels": int(in_channels),
+            "out_channels": int(out_channels),
+            "base_channels": base_channels,
+            "depth": depth,
+            "occupancy_hidden_channels": occupancy_hidden_channels,
+            "dropout": float(dropout),
+        }
+        self.encoder = nn.ModuleList()
+        self.encoder.append(ResidualConvBlock(int(in_channels), channels[0], dropout=float(dropout)))
+        for idx in range(1, depth):
+            self.encoder.append(ResidualConvBlock(channels[idx - 1], channels[idx], dropout=float(dropout)))
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.decoder = nn.ModuleList()
+        for idx in range(depth - 1, 0, -1):
+            self.decoder.append(UpBlock(channels[idx], channels[idx - 1], channels[idx - 1], dropout=float(dropout)))
+        self.pixel_head = nn.Conv2d(channels[0], int(out_channels), kernel_size=1)
+
+        hidden = int(occupancy_hidden_channels or max(channels[-1] // 2, base_channels))
+        self.occupancy_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(channels[-1], hidden),
+            nn.SiLU(),
+            nn.Dropout(float(dropout)) if float(dropout) > 0.0 else nn.Identity(),
+            nn.Linear(hidden, 1),
+        )
+
+    def architecture_dict(self) -> dict[str, Any]:
+        return dict(self.config)
+
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        skips: list[torch.Tensor] = []
+        for idx, block in enumerate(self.encoder):
+            if idx > 0:
+                x = self.pool(x)
+            x = block(x)
+            skips.append(x)
+        bottleneck = skips[-1]
+        decoded = bottleneck
+        for block, skip in zip(self.decoder, reversed(skips[:-1])):
+            decoded = block(decoded, skip)
+        return {
+            "pixel_logits": self.pixel_head(decoded),
+            "occupancy_logit": self.occupancy_head(bottleneck),
+        }
+
+
 class OccupancyOnlyUNet(nn.Module):
     """Encoder-only U-Net family classifier for patch-level ship presence."""
 
@@ -551,6 +620,15 @@ def build_density_model(name: str, **kwargs: Any) -> nn.Module:
         "ship_presence",
     }:
         return OccupancyOnlyUNet(**kwargs)
+    if normalized in {
+        "pixel_binary_occupancy",
+        "pixel_binary_occupancy_unet",
+        "pixelbinaryoccupancyunet",
+        "pixel_occupancy",
+        "pixel_ox",
+        "ship_pixel_presence",
+    }:
+        return PixelBinaryOccupancyUNet(**kwargs)
     if normalized in {
         "spatial_only",
         "spatial_only_unet",

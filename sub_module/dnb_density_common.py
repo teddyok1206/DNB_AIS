@@ -572,6 +572,7 @@ def density_patch_collate(
     soft_attention = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     loss_weight = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     valid_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
+    raw_count = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     lifetime = torch.zeros((batch_size,), dtype=torch.float32)
 
     metadata: list[dict[str, Any]] = []
@@ -586,6 +587,7 @@ def density_patch_collate(
         weight = torch.from_numpy(np.asarray(patch.loss_weight, dtype=np.float32))
         valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
+        raw = torch.from_numpy(np.asarray(patch.raw_count, dtype=np.float32))
         lifetime[idx] = float(patch.lifetime)
 
         for channel_idx, channel_name in enumerate(channel_names):
@@ -601,6 +603,7 @@ def density_patch_collate(
         soft_attention[idx, 0, :h, :w] = attention
         loss_weight[idx, 0, :h, :w] = weight
         valid_mask[idx, 0, :h, :w] = valid
+        raw_count[idx, 0, :h, :w] = raw
         metadata.append(
             {
                 "cluster_id": int(patch.cluster_id),
@@ -635,6 +638,7 @@ def density_patch_collate(
         "soft_attention": soft_attention,
         "loss_weight": loss_weight,
         "valid_mask": valid_mask,
+        "raw_count": raw_count,
         "lifetime": lifetime,
         "metadata": metadata,
     }
@@ -654,6 +658,7 @@ def move_density_batch_to_device(batch: dict[str, Any], device: torch.device | s
         "soft_attention",
         "loss_weight",
         "valid_mask",
+        "raw_count",
         "lifetime",
     ]
     for key in tensor_keys:
@@ -702,5 +707,6 @@ def summarize_density_patches(patches: Iterable[DensityPatch]) -> dict[str, Any]
         "valid_pixels_total": int(valid_pixels.sum()) if valid_pixels.size else 0,
         "valid_pixels_median": int(np.median(valid_pixels)) if valid_pixels.size else 0,
         "ph_anchor_patch_count": int(sum(kind == "ph_anchor" for kind in partition_kinds)),
+        "ph_child_patch_count": int(sum(kind == "ph_child" for kind in partition_kinds)),
         "fallback_grid_patch_count": int(sum(kind == "fallback_grid" for kind in partition_kinds)),
     }

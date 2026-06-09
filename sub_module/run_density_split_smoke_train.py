@@ -221,6 +221,7 @@ def target_config_from_config(config: dict[str, Any]) -> DensityTargetConfig:
 def partition_config_from_config(config: dict[str, Any]) -> ScenePartitionConfig:
     partition = config.get("partitioning", {})
     hierarchical = partition.get("hierarchical_ph", {})
+    recursive = hierarchical.get("recursive", {})
     return ScenePartitionConfig(
         enabled=True,
         fallback_tile_pixels=int(partition.get("fallback_tile_pixels", 96)),
@@ -244,6 +245,11 @@ def partition_config_from_config(config: dict[str, Any]) -> ScenePartitionConfig
         hierarchical_child_max_nodes=int(hierarchical.get("child_max_nodes", 2048)),
         hierarchical_child_max_candidates_per_parent=int(hierarchical.get("child_max_candidates_per_parent", 64)),
         hierarchical_keep_large_parent=bool(hierarchical.get("keep_large_parent", False)),
+        hierarchical_recursive_enabled=bool(recursive.get("enabled", False)),
+        hierarchical_recursive_max_depth=int(recursive.get("max_depth", 1)),
+        hierarchical_recursive_target_max_height=int(recursive.get("target_max_height", 0)),
+        hierarchical_recursive_target_max_width=int(recursive.get("target_max_width", 0)),
+        hierarchical_recursive_target_max_pixels=int(recursive.get("target_max_pixels", 0)),
     )
 
 
@@ -539,8 +545,9 @@ def build_scene(
         "selected_target_sum": float(sum(patch.target_sum for patch in selected)),
         "selected_raw_sum": float(sum(patch.raw_count_sum for patch in selected)),
     }
-    if bool(args.skip_ph_anchor_zero) and int(partition_summary.get("ph_anchor_count", 0)) <= 0:
-        return SceneBuildResult(record=record, patches=[], metrics=metrics, excluded_reason="ph_anchor_count_zero")
+    ph_partition_count = int(partition_summary.get("ph_anchor_count", 0)) + int(partition_summary.get("ph_child_count", 0))
+    if bool(args.skip_ph_anchor_zero) and ph_partition_count <= 0:
+        return SceneBuildResult(record=record, patches=[], metrics=metrics, excluded_reason="ph_partition_count_zero")
     if not selected:
         return SceneBuildResult(record=record, patches=[], metrics=metrics, excluded_reason="no_selected_patches_after_smoke_filters")
     return SceneBuildResult(record=record, patches=selected, metrics=metrics)
@@ -551,6 +558,8 @@ def infer_density_from_output(output: torch.Tensor | dict[str, torch.Tensor], ba
         return output
     if "density" in output:
         return output["density"]
+    if "pixel_logits" in output:
+        return torch.sigmoid(output["pixel_logits"]) * batch["valid_mask"]
     if "spatial_logits" not in output and ("occupancy_logit" in output or "occupancy_logits" in output):
         valid_mask = (batch["valid_mask"] > 0).to(dtype=batch["valid_mask"].dtype)
         valid_count = torch.clamp(valid_mask.flatten(1).sum(dim=1).reshape(-1, 1, 1, 1), min=1.0e-8)
@@ -649,7 +658,16 @@ def run_batches(
     spatial_overlaps: list[float] = []
     occupancy_probs: list[float] = []
     occupancy_targets: list[float] = []
+    pixel_tp = 0
+    pixel_fp = 0
+    pixel_fn = 0
+    pixel_tn = 0
+    pixel_valid_count = 0
+    pixel_target_positive_count = 0
+    pixel_pred_positive_count = 0
+    pixel_brier_sum = 0.0
     uses_occupancy_loss = hasattr(loss_fn, "occupancy_from_output")
+    uses_pixel_occupancy_loss = hasattr(loss_fn, "pixel_occupancy_from_output")
     eps = 1.0e-8
     if train:
         model.train()
@@ -696,6 +714,19 @@ def run_batches(
                 occ_prob, occ_target = loss_fn.occupancy_from_output(pred_output, batch)
                 occupancy_probs.extend(float(v) for v in occ_prob.detach().cpu().tolist())
                 occupancy_targets.extend(float(v) for v in occ_target.detach().cpu().tolist())
+            if hasattr(loss_fn, "pixel_occupancy_from_output"):
+                pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(pred_output, batch)
+                valid_bool = pixel_valid.detach() > 0
+                target_bool = (pixel_target.detach() > 0.5) & valid_bool
+                pred_bool = (pixel_prob.detach() >= 0.5) & valid_bool
+                pixel_tp += int((pred_bool & target_bool).sum().cpu())
+                pixel_fp += int((pred_bool & ~target_bool & valid_bool).sum().cpu())
+                pixel_fn += int((~pred_bool & target_bool).sum().cpu())
+                pixel_tn += int((~pred_bool & ~target_bool & valid_bool).sum().cpu())
+                pixel_valid_count += int(valid_bool.sum().cpu())
+                pixel_target_positive_count += int(target_bool.sum().cpu())
+                pixel_pred_positive_count += int(pred_bool.sum().cpu())
+                pixel_brier_sum += float((((pixel_prob.detach() - pixel_target.detach()) ** 2) * pixel_valid.detach()).sum().cpu())
             patch_count += len(batch["metadata"])
     pred_masses = np.asarray(pred_patch_masses, dtype=np.float64)
     target_masses = np.asarray(target_patch_masses, dtype=np.float64)
@@ -771,6 +802,30 @@ def run_batches(
                 "occupancy_tn": tn,
             }
         )
+    if uses_pixel_occupancy_loss and pixel_valid_count > 0:
+        pixel_precision = pixel_tp / max(pixel_tp + pixel_fp, 1)
+        pixel_recall = pixel_tp / max(pixel_tp + pixel_fn, 1)
+        pixel_f1 = 2.0 * pixel_precision * pixel_recall / max(pixel_precision + pixel_recall, eps)
+        pixel_iou = pixel_tp / max(pixel_tp + pixel_fp + pixel_fn, 1)
+        metrics.update(
+            {
+                "pixel_accuracy": float((pixel_tp + pixel_tn) / max(pixel_valid_count, 1)),
+                "pixel_precision": float(pixel_precision),
+                "pixel_recall": float(pixel_recall),
+                "pixel_f1": float(pixel_f1),
+                "pixel_iou": float(pixel_iou),
+                "pixel_brier": float(pixel_brier_sum / max(pixel_valid_count, 1)),
+                "pixel_valid_count": int(pixel_valid_count),
+                "pixel_positive_target_count": int(pixel_target_positive_count),
+                "pixel_negative_target_count": int(pixel_valid_count - pixel_target_positive_count),
+                "pixel_pred_positive_count": int(pixel_pred_positive_count),
+                "pixel_tp": int(pixel_tp),
+                "pixel_fp": int(pixel_fp),
+                "pixel_fn": int(pixel_fn),
+                "pixel_tn": int(pixel_tn),
+                "pixel_threshold": 0.5,
+            }
+        )
     return metrics
 
 
@@ -782,6 +837,7 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
         "scene_key",
         "excluded_reason",
         "ph_anchor_count",
+        "ph_child_count",
         "fallback_grid_count",
         "patch_count_total",
         "patch_count_selected",
@@ -793,10 +849,12 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
         "candidate_positive_patch_count",
         "candidate_negative_patch_count",
         "candidate_ph_anchor_count",
+        "candidate_ph_child_count",
         "candidate_fallback_grid_count",
         "selected_positive_patch_count",
         "selected_negative_patch_count",
         "selected_ph_anchor_count",
+        "selected_ph_child_count",
         "selected_fallback_grid_count",
         "max_ph_patches_per_scene",
         "max_fallback_patches_per_scene",
@@ -816,6 +874,7 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
                     "scene_key": result.record.scene_key,
                     "excluded_reason": result.excluded_reason or "",
                     "ph_anchor_count": int(summary.get("ph_anchor_count", 0)),
+                    "ph_child_count": int(summary.get("ph_child_count", 0)),
                     "fallback_grid_count": int(summary.get("fallback_grid_count", 0)),
                     "patch_count_total": int(result.metrics.get("patch_count_total", 0)),
                     "patch_count_selected": int(result.metrics.get("patch_count_selected", 0)),
@@ -827,10 +886,12 @@ def save_scene_metrics(path: Path, results: list[SceneBuildResult]) -> None:
                     "candidate_positive_patch_count": int(selection.get("candidate_positive_patch_count", 0)),
                     "candidate_negative_patch_count": int(selection.get("candidate_negative_patch_count", 0)),
                     "candidate_ph_anchor_count": int(selection.get("candidate_ph_anchor_count", 0)),
+                    "candidate_ph_child_count": int(selection.get("candidate_ph_child_count", 0)),
                     "candidate_fallback_grid_count": int(selection.get("candidate_fallback_grid_count", 0)),
                     "selected_positive_patch_count": int(selection.get("selected_positive_patch_count", 0)),
                     "selected_negative_patch_count": int(selection.get("selected_negative_patch_count", 0)),
                     "selected_ph_anchor_count": int(selection.get("selected_ph_anchor_count", 0)),
+                    "selected_ph_child_count": int(selection.get("selected_ph_child_count", 0)),
                     "selected_fallback_grid_count": int(selection.get("selected_fallback_grid_count", 0)),
                     "max_ph_patches_per_scene": int(selection.get("max_ph_patches_per_scene", 0)),
                     "max_fallback_patches_per_scene": int(selection.get("max_fallback_patches_per_scene", 0)),
@@ -1057,8 +1118,15 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  [skip] {record.scene_key}: {result.excluded_reason}")
                 continue
             selected_by_split[split].extend(result.patches)
-            ph_count = int(result.metrics["partition_summary"]["ph_anchor_count"])
-            print(f"  [ok] ph={ph_count} selected_patches={len(result.patches)} target_sum={result.metrics['selected_target_sum']:.1f}")
+            partition_summary = result.metrics["partition_summary"]
+            ph_anchor_count = int(partition_summary.get("ph_anchor_count", 0))
+            ph_child_count = int(partition_summary.get("ph_child_count", 0))
+            fallback_count = int(partition_summary.get("fallback_grid_count", 0))
+            print(
+                "  [ok] "
+                f"ph_anchor={ph_anchor_count} ph_child={ph_child_count} fallback={fallback_count} "
+                f"selected_patches={len(result.patches)} target_sum={result.metrics['selected_target_sum']:.1f}"
+            )
         if patch_cache_dir is not None and patch_cache_mode in {"write", "readwrite"}:
             cache_metadata = {
                 "scene_split_csv": str(args.scene_split_csv.expanduser().resolve()),
@@ -1147,6 +1215,7 @@ def main(argv: list[str] | None = None) -> int:
     best_val_loss = float("inf")
     best_val_mass_ratio_error = float("inf")
     best_val_occupancy_f1 = -float("inf")
+    best_val_pixel_f1 = -float("inf")
     best_val_spatial_overlap = -float("inf")
     for epoch in range(int(args.epochs)):
         train_metrics = run_batches(
@@ -1238,6 +1307,28 @@ def main(argv: list[str] | None = None) -> int:
                 "path": checkpoint_path,
                 "epoch": int(epoch + 1),
                 "occupancy_f1": float(val_occupancy_f1),
+            }
+        val_pixel_f1 = val_metrics.get("pixel_f1")
+        if bool(args.save_checkpoint) and val_pixel_f1 is not None and float(val_pixel_f1) > best_val_pixel_f1:
+            best_val_pixel_f1 = float(val_pixel_f1)
+            checkpoint_path = save_checkpoint(
+                output_dir / "checkpoints" / "checkpoint_best_val_pixel_f1.pt",
+                model=model,
+                optimizer=optimizer,
+                config=config,
+                args=args,
+                train_history=train_history,
+                test_metrics={
+                    "selection": "best_val_pixel_f1",
+                    "epoch": int(epoch + 1),
+                    "val": val_metrics,
+                    "pixel_f1": float(val_pixel_f1),
+                },
+            )
+            best_checkpoints["best_val_pixel_f1"] = {
+                "path": checkpoint_path,
+                "epoch": int(epoch + 1),
+                "pixel_f1": float(val_pixel_f1),
             }
         val_spatial_overlap = val_metrics.get("spatial_overlap_mean_positive")
         if bool(args.save_checkpoint) and val_spatial_overlap is not None and float(val_spatial_overlap) > best_val_spatial_overlap:

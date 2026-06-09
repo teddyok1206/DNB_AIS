@@ -1,0 +1,177 @@
+{
+  "schema_version": 4,
+  "experiment_family": "dnb_density_pixel_binary",
+  "role": "main",
+  "status": "experiment_pixel_binary_recursive_ph_hardtarget_20260609",
+  "locked_on": "2026-06-09",
+  "locked_decision": "Use PH-guided recursive scene partitioning and train the main target as hard pixel occupancy: raw_count > 0. Smoothed GT density is retained only for legacy visualization/compatibility and is not the primary supervised label.",
+  "description": "Pixel-level binary ship-presence experiment on the fixed DNB/AIS split. PH recursively subdivides large anchors before fallback tiles cover remaining sea pixels. The U-Net emits independent per-pixel sigmoid logits; patch-level O/X is an auxiliary head only.",
+  "device": "mps",
+  "primary_target": {
+    "name": "hard_pixel_occupancy",
+    "definition": "target_pixel = 1 if raw_count > 0 else 0, masked by the partition owner sea mask",
+    "prediction": "pixel_logits -> sigmoid(pixel_logits), thresholded at 0.5 for fixed metrics and calibrated on val for evaluation",
+    "main_metrics": [
+      "pixel_precision",
+      "pixel_recall",
+      "pixel_f1",
+      "pixel_iou",
+      "pixel_brier"
+    ],
+    "not_primary": [
+      "smoothed_density_overlap",
+      "patch_level_occupancy_f1"
+    ]
+  },
+  "auxiliary_options": {
+    "gt_smoothing": {
+      "enabled_for_main_target": false,
+      "allowed_for": [
+        "legacy_preview_panels",
+        "legacy_density_metric_compatibility"
+      ],
+      "rationale": "DNB brightness can be visually diffuse, but AIS-derived label identity should not be spread into neighboring pixels for the main O/X target."
+    },
+    "patch_occupancy_auxiliary": {
+      "enabled": true,
+      "loss_weight": 0.1,
+      "rationale": "Patch O/X is retained only as a weak regularizer so the model notices empty patches; it is not the reporting target."
+    },
+    "dice_auxiliary": {
+      "enabled": false,
+      "loss_weight": 0.0,
+      "rationale": "Keep the first hard-target run simple. Dice can be enabled later if weighted BCE collapses to all-background."
+    },
+    "spatial_softmax_overlap": {
+      "enabled": false,
+      "rationale": "The new pixel head is independent sigmoid, not a per-patch probability distribution softmax."
+    }
+  },
+  "sea_mask": {
+    "enabled": true,
+    "source": "kr_eez_plus_12nm",
+    "crop_to_bounds": true,
+    "segment_policy": "single_scene",
+    "write_masked_tif": true,
+    "output_dir": "outputs/dnb_density/preprocessed_scene_masks/density",
+    "all_touched": true
+  },
+  "detector": {
+    "name": "DnbCandidateDetector",
+    "backend": "cripser",
+    "detection_threshold": 1.0,
+    "analysis_threshold": 0.25,
+    "threshold_reference": "median",
+    "smooth_sigma": 0.0,
+    "lifetime_limit_fraction": 1.001,
+    "area_limit": 0,
+    "min_nodes": 4,
+    "max_nodes": 2500,
+    "remove_edge": false,
+    "drop_nested": false
+  },
+  "ph_downsample": {
+    "factor": 4,
+    "reducer": "max",
+    "scope": "anchor_extraction_only"
+  },
+  "patching": {
+    "padding_pixels": 12,
+    "size_divisor": 16,
+    "sort_by": "node_count",
+    "parent_min_nodes": 32,
+    "parent_max_nodes": null,
+    "child_min_nodes": 4,
+    "child_max_nodes": null,
+    "max_children": null,
+    "seed_radius_pixels": 1,
+    "attention_distance_sigma": 4.0,
+    "attention_base_weight": 0.25,
+    "attention_ph_weight": 0.75,
+    "input_channels": [
+      "brightness",
+      "parent_ph_mask",
+      "child_ph_union_mask",
+      "ph_seed_map",
+      "ph_persistence_map",
+      "ph_soft_attention",
+      "anchor_lifetime_map"
+    ],
+    "loss_weight": "valid owner mask only. Pixel binary loss uses raw_count > 0 and does not consume the smoothed target as label."
+  },
+  "partitioning": {
+    "enabled": true,
+    "fallback_tile_pixels": 64,
+    "halo_pixels": 16,
+    "anchor_padding_pixels": 12,
+    "min_owner_pixels": 1,
+    "min_fallback_owner_pixels": 1,
+    "policy": "PH anchors claim valid sea pixels first. Large PH anchors are recursively subdivided until target size or max depth; fallback grid assigns remaining valid sea pixels exactly once.",
+    "hierarchical_ph": {
+      "enabled": true,
+      "large_min_pixels": 16384,
+      "large_min_height": 160,
+      "large_min_width": 160,
+      "child_anchor_padding_pixels": 6,
+      "child_detection_threshold": 0.5,
+      "child_analysis_threshold": 0.25,
+      "child_threshold_reference": "median",
+      "child_smooth_sigma": 0.0,
+      "child_lifetime_limit": 0.0,
+      "child_lifetime_limit_fraction": 1.0005,
+      "child_area_limit": 0,
+      "child_min_nodes": 3,
+      "child_max_nodes": 2048,
+      "child_max_candidates_per_parent": 96,
+      "keep_large_parent": false,
+      "recursive": {
+        "enabled": true,
+        "max_depth": 3,
+        "target_max_height": 128,
+        "target_max_width": 128,
+        "target_max_pixels": 8192
+      },
+      "policy": "When recursive is enabled, child PH clusters that still exceed the target size are not emitted as training patches; their descendants or fallback grid cover the area."
+    }
+  },
+  "target": {
+    "kernel": "gaussian",
+    "sigma_pixels": 1.0,
+    "radius_pixels": 4,
+    "renormalize_after_roi_mask": false,
+    "require_source_in_roi": false,
+    "per_ship_mass": 1.0,
+    "role": "legacy_smoothed_density_for_visualization_only; pixel_binary_occupancy_loss uses raw_count > 0"
+  },
+  "model": {
+    "name": "PixelBinaryOccupancyUNet",
+    "in_channels": 7,
+    "out_channels": 1,
+    "base_channels": 32,
+    "depth": 4,
+    "occupancy_hidden_channels": 128,
+    "dropout": 0.05
+  },
+  "training": {
+    "loss": {
+      "name": "pixel_binary_occupancy_loss",
+      "rationale": "Main target is hard per-pixel AIS occupancy from raw_count > 0. Patch-level O/X is auxiliary only; smoothed density is ignored by the loss.",
+      "pixel_weight": 0.9,
+      "occupancy_weight": 0.1,
+      "pixel_pos_weight": 256.0,
+      "occupancy_pos_weight": 1.0,
+      "dice_weight": 0.0,
+      "min_raw_count_for_positive": 0.0,
+      "lifetime_weight_mode": "none",
+      "lifetime_weight_strength": 0.0,
+      "lifetime_weight_min": 0.5,
+      "lifetime_weight_max": 1.75,
+      "lifetime_weight_normalize": true
+    },
+    "batch_size": 8,
+    "epochs": 24,
+    "lr": 5e-05,
+    "weight_decay": 0.0003,
+    "grad_clip_norm": 1.0
+  }
+}

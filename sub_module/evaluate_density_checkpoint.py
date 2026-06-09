@@ -30,6 +30,7 @@ CHECKPOINT_SELECTIONS = {
     "best_val_occupancy_mass_ratio": ("best_checkpoints", "best_val_occupancy_mass_ratio"),
     "best_val_count_ratio": ("best_checkpoints", "best_val_count_ratio"),
     "best_val_occupancy_f1": ("best_checkpoints", "best_val_occupancy_f1"),
+    "best_val_pixel_f1": ("best_checkpoints", "best_val_pixel_f1"),
     "best_val_spatial_overlap": ("best_checkpoints", "best_val_spatial_overlap"),
 }
 
@@ -139,6 +140,43 @@ def collect_occupancy_scores(
     return np.asarray(probs, dtype=np.float64), np.asarray(targets, dtype=bool)
 
 
+def collect_pixel_scores(
+    *,
+    model: torch.nn.Module,
+    loss_fn: torch.nn.Module,
+    patches: list[Any],
+    batch_size: int,
+    size_divisor: int,
+    device: torch.device,
+    num_workers: int,
+    input_channels: list[str] | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    if not hasattr(loss_fn, "pixel_occupancy_from_output"):
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
+    loader = make_loader(
+        patches,
+        batch_size,
+        size_divisor,
+        shuffle=False,
+        num_workers=num_workers,
+        input_channels=input_channels,
+    )
+    probs: list[np.ndarray] = []
+    targets: list[np.ndarray] = []
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            batch = move_density_batch_to_device(batch, device)
+            output = model(batch["x"])
+            pixel_prob, pixel_target, pixel_valid = loss_fn.pixel_occupancy_from_output(output, batch)
+            valid = (pixel_valid.detach() > 0).cpu().numpy().reshape(-1)
+            probs.append(pixel_prob.detach().cpu().numpy().reshape(-1)[valid].astype(np.float32, copy=False))
+            targets.append((pixel_target.detach().cpu().numpy().reshape(-1)[valid] > 0.5))
+    if not probs:
+        return np.asarray([], dtype=np.float64), np.asarray([], dtype=bool)
+    return np.concatenate(probs).astype(np.float64, copy=False), np.concatenate(targets).astype(bool, copy=False)
+
+
 def threshold_metrics(probs: np.ndarray, targets: np.ndarray, threshold: float) -> dict[str, Any]:
     if probs.size == 0:
         return {}
@@ -150,12 +188,14 @@ def threshold_metrics(probs: np.ndarray, targets: np.ndarray, threshold: float) 
     precision = tp / max(tp + fp, 1)
     recall = tp / max(tp + fn, 1)
     f1 = 2.0 * precision * recall / max(precision + recall, 1.0e-8)
+    iou = tp / max(tp + fp + fn, 1)
     return {
         "threshold": float(threshold),
         "accuracy": float((tp + tn) / max(len(targets), 1)),
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
+        "iou": float(iou),
         "brier": float(np.mean((probs - targets.astype(np.float64)) ** 2)),
         "positive_target_count": int(targets.sum()),
         "negative_target_count": int((~targets).sum()),
@@ -249,6 +289,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     fixed_eval = threshold_metrics(eval_probs, eval_targets, 0.5) if eval_probs.size else {}
 
+    pixel_calibration_probs, pixel_calibration_targets = collect_pixel_scores(
+        model=model,
+        loss_fn=loss_fn,
+        patches=calibration_patches,
+        batch_size=batch_size,
+        size_divisor=size_divisor,
+        device=device,
+        num_workers=int(args.num_workers),
+        input_channels=input_channels,
+    )
+    pixel_eval_probs, pixel_eval_targets = collect_pixel_scores(
+        model=model,
+        loss_fn=loss_fn,
+        patches=eval_patches,
+        batch_size=batch_size,
+        size_divisor=size_divisor,
+        device=device,
+        num_workers=int(args.num_workers),
+        input_channels=input_channels,
+    )
+    pixel_calibration_best = best_threshold_by_f1(
+        pixel_calibration_probs,
+        pixel_calibration_targets,
+        int(args.threshold_grid_size),
+    )
+    pixel_calibrated_eval = (
+        threshold_metrics(pixel_eval_probs, pixel_eval_targets, float(pixel_calibration_best["threshold"]))
+        if pixel_calibration_best
+        else {}
+    )
+    pixel_fixed_eval = threshold_metrics(pixel_eval_probs, pixel_eval_targets, 0.5) if pixel_eval_probs.size else {}
+
     result = {
         "schema_version": 1,
         "kind": "density_checkpoint_evaluation",
@@ -268,12 +340,19 @@ def main(argv: list[str] | None = None) -> int:
         },
         "metrics_fixed_threshold_0p5": eval_metrics,
         "occupancy_fixed_threshold_0p5": fixed_eval,
+        "pixel_fixed_threshold_0p5": pixel_fixed_eval,
         "calibration": {
             "method": "maximize_f1_on_calibration_split",
             "threshold_grid_size": int(args.threshold_grid_size),
             "best": calibration_best,
         },
         "metrics_calibrated_threshold": calibrated_eval,
+        "pixel_calibration": {
+            "method": "maximize_f1_on_calibration_split",
+            "threshold_grid_size": int(args.threshold_grid_size),
+            "best": pixel_calibration_best,
+        },
+        "pixel_metrics_calibrated_threshold": pixel_calibrated_eval,
     }
     output_json = args.output_json
     if output_json is None:
@@ -281,7 +360,21 @@ def main(argv: list[str] | None = None) -> int:
     output_json = output_json.expanduser().resolve()
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(json.dumps({"output_json": str(output_json), "fixed": eval_metrics, "calibrated": calibrated_eval, "calibration": calibration_best}, ensure_ascii=False, indent=2))
+    print(
+        json.dumps(
+            {
+                "output_json": str(output_json),
+                "fixed": eval_metrics,
+                "calibrated": calibrated_eval,
+                "calibration": calibration_best,
+                "pixel_fixed": pixel_fixed_eval,
+                "pixel_calibrated": pixel_calibrated_eval,
+                "pixel_calibration": pixel_calibration_best,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0
 
 
