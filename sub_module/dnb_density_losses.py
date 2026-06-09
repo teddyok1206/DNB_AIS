@@ -13,9 +13,12 @@ import torch.nn.functional as F
 class PixelBinaryOccupancyLossConfig:
     name: str = "pixel_binary_occupancy_loss"
     target_mode: str = "hard"
+    pixel_loss_type: str = "bce"
     pixel_weight: float = 0.85
     occupancy_weight: float = 0.15
     pixel_pos_weight: float = 50.0
+    field_weight_strength: float = 0.0
+    smooth_l1_beta: float = 0.1
     occupancy_pos_weight: float = 1.0
     dice_weight: float = 0.0
     min_raw_count_for_positive: float = 0.0
@@ -219,13 +222,28 @@ class PixelBinaryOccupancyLoss(nn.Module):
             reference=target,
         ).reshape(-1, 1, 1, 1)
         weight = valid_mask * sample_weight
-        pixel_element = F.binary_cross_entropy_with_logits(
-            pixel_logits,
-            target,
-            reduction="none",
-            pos_weight=pixel_logits.new_tensor(float(cfg.pixel_pos_weight)),
-        )
-        pixel = (pixel_element * weight).sum() / torch.clamp(weight.sum(), min=float(cfg.eps))
+        pixel_loss_type = str(cfg.pixel_loss_type).strip().lower()
+        pixel_weight_map = weight
+        if pixel_loss_type in {"bce", "binary_cross_entropy", "binary_cross_entropy_with_logits"}:
+            pixel_element = F.binary_cross_entropy_with_logits(
+                pixel_logits,
+                target,
+                reduction="none",
+                pos_weight=pixel_logits.new_tensor(float(cfg.pixel_pos_weight)),
+            )
+        elif pixel_loss_type in {"smooth_l1", "weighted_smooth_l1", "huber", "field_smooth_l1"}:
+            pred_prob_for_loss = torch.sigmoid(pixel_logits)
+            pixel_element = F.smooth_l1_loss(
+                pred_prob_for_loss,
+                target,
+                reduction="none",
+                beta=max(float(cfg.smooth_l1_beta), float(cfg.eps)),
+            )
+            if float(cfg.field_weight_strength) > 0.0:
+                pixel_weight_map = weight * (1.0 + float(cfg.field_weight_strength) * torch.clamp(target, min=0.0, max=1.0))
+        else:
+            raise ValueError(f"Unsupported pixel_loss_type: {cfg.pixel_loss_type}")
+        pixel = (pixel_element * pixel_weight_map).sum() / torch.clamp(pixel_weight_map.sum(), min=float(cfg.eps))
         dice = self._soft_dice_loss(pixel_logits, target, weight, float(cfg.eps)) if float(cfg.dice_weight) > 0.0 else pixel.new_tensor(0.0)
 
         occupancy = pixel.new_tensor(0.0)
@@ -252,8 +270,12 @@ class PixelBinaryOccupancyLoss(nn.Module):
             metric_positive = target >= float(cfg.probability_target_threshold)
             self.last_components = {
                 "loss_total": float(total.detach().cpu()),
-                "loss_pixel_bce": float(pixel.detach().cpu()),
+                "loss_pixel_field": float(pixel.detach().cpu()),
                 "loss_pixel_dice": float(dice.detach().cpu()),
+                "pixel_loss_type": 1.0 if pixel_loss_type in {"smooth_l1", "weighted_smooth_l1", "huber", "field_smooth_l1"} else 0.0,
+                "field_weight_strength": float(cfg.field_weight_strength),
+                "field_weight_mean": float((pixel_weight_map * valid_mask).sum().detach().cpu() / valid_count),
+                "smooth_l1_beta": float(cfg.smooth_l1_beta),
                 "loss_weight_pixel": float(cfg.pixel_weight),
                 "loss_weight_dice": float(cfg.dice_weight),
                 "target_mode": 1.0 if str(cfg.target_mode).strip().lower() in {"radius_probability", "probability_field", "gaussian_radius", "proximity"} else 0.0,
@@ -294,6 +316,9 @@ def build_density_loss(config: dict[str, Any] | PixelBinaryOccupancyLossConfig |
         if normalized in {
             "pixel_binary_occupancy_loss",
             "radius_probability_loss",
+            "weighted_smooth_l1_probability_loss",
+            "smooth_l1_probability_loss",
+            "probability_field_smooth_l1_loss",
             "probability_field_loss",
             "radius_probability_occupancy_loss",
             "probability_field_occupancy_loss",

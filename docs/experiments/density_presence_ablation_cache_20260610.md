@@ -59,9 +59,20 @@ These rows re-evaluate the trained model probabilities against common radius-pre
 
 Do not move to hard exact target training. Keep the probability-field framing, but the next useful change should address ranking against brightness directly instead of only changing the target radius.
 
+## Follow-Up Loss Change
+
+The active probability-field config now uses `weighted_smooth_l1_probability_loss` instead of weighted BCE. The target remains a clipped Gaussian AIS-presence field, but the loss is now field regression:
+
+`loss = mean_valid((1 + field_weight_strength * target_probability) * SmoothL1(sigmoid(logits), target_probability))`
+
+This makes the training objective match the project target more directly: the model should emit a continuous 0..1 ship-presence probability field, not solve a binary classification problem.
+
+Existing BCE-trained checkpoints should not be treated as equivalent after this change. A new training run is required for fair model-vs-brightness comparison under the SmoothL1 objective.
+
 Recommended next experiments:
 
 1. Use brightness-only Gaussian sigma=4 as the current minimal reference.
-2. Add a ranking or brightness-lift objective so the model is explicitly trained to outperform raw brightness on AIS-presence ranking.
-3. Treat PH as a controlled optional input, not a default, until it shows positive lift over brightness-only.
-4. Keep AP and top-k precision against raw brightness as the primary reporting metrics.
+2. Run the weighted SmoothL1 probability-field config and compare against the cached BCE probes.
+3. Add a ranking or brightness-lift objective only if SmoothL1 still fails to beat raw brightness on AP and top-k precision.
+4. Treat PH as a controlled optional input, not a default, until it shows positive lift over brightness-only.
+5. Keep AP and top-k precision against raw brightness as the primary reporting metrics.

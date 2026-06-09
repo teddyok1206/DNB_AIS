@@ -4,8 +4,8 @@
   "role": "main",
   "status": "experiment_probability_field_recursive_ph_20260610",
   "locked_on": "2026-06-10",
-  "locked_decision": "Train a pure per-pixel ship-presence probability map. Raw AIS pixels seed a Gaussian proximity target; patch O/X, count-mass, and soft-overlap objectives/metrics are retired.",
-  "description": "PH-assisted U-Net trained to emit a per-pixel ship-presence probability map from brightness plus minimal PH structure channels. Evaluation compares model probability pixels directly against the raw brightness baseline.",
+  "locked_decision": "Train a pure per-pixel ship-presence probability map with target-weighted SmoothL1 regression to a Gaussian AIS proximity field. Raw AIS pixels seed the target; patch O/X, count-mass, and soft-overlap objectives/metrics are retired.",
+  "description": "PH-assisted U-Net trained with weighted SmoothL1 field regression to emit a per-pixel ship-presence probability map from brightness plus minimal PH structure channels. Evaluation compares model probability pixels directly against the raw brightness baseline.",
   "device": "mps",
   "primary_target": {
     "name": "ship_presence_probability_map",
@@ -130,12 +130,12 @@
   },
   "training": {
     "loss": {
-      "name": "radius_probability_loss",
+      "name": "weighted_smooth_l1_probability_loss",
       "target_mode": "radius_probability",
-      "rationale": "Train sigmoid pixel logits against a Gaussian proximity probability field seeded by raw_count > 0. No patch O/X auxiliary, no count-mass preservation, and no soft-overlap objective.",
+      "rationale": "Regress sigmoid pixel probabilities to a Gaussian AIS-presence probability field with target-weighted SmoothL1. This is a probability-field regression objective, not binary classification.",
       "pixel_weight": 1.0,
       "occupancy_weight": 0.0,
-      "pixel_pos_weight": 8.0,
+      "pixel_pos_weight": 1.0,
       "occupancy_pos_weight": 1.0,
       "dice_weight": 0.0,
       "min_raw_count_for_positive": 0.0,
@@ -147,7 +147,10 @@
       "lifetime_weight_strength": 0.0,
       "lifetime_weight_min": 0.5,
       "lifetime_weight_max": 1.75,
-      "lifetime_weight_normalize": true
+      "lifetime_weight_normalize": true,
+      "pixel_loss_type": "weighted_smooth_l1",
+      "field_weight_strength": 8.0,
+      "smooth_l1_beta": 0.1
     },
     "batch_size": 8,
     "epochs": 24,
@@ -159,10 +162,12 @@
     "active": [
       "brightness_ph_persistence_ph_seed_inputs",
       "gaussian_radius_probability_target_from_raw_ais_seeds",
+      "weighted_smooth_l1_probability_field_regression",
       "model_vs_brightness_presence_ranking_evaluation",
       "probability_calibration_on_validation_split"
     ],
     "retired": [
+      "weighted_bce_probability_field_loss",
       "patch_occupancy_auxiliary_loss",
       "dice_auxiliary_loss",
       "spatial_softmax_overlap",
