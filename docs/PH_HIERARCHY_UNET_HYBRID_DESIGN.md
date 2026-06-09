@@ -1,67 +1,58 @@
-좋은 방향입니다. 내가 보기엔 **2 계층적 PH를 region proposal의 rigid structure로 쓰고, 3의 “GT를 놓치지 않는 crop-level target”을 결합**하는 게 제일 타당합니다.
+좋은 방향입니다. 내가 보기엔 **계층적 PH를 region proposal의 rigid structure로 쓰고, hard pixel target을 PH mask로 검열하지 않는 방식**이 제일 타당합니다.
+
+2026-06-09 update: active U-Net input은 3채널로 고정합니다.
+
+```text
+brightness
+ph_persistence_map
+ph_seed_map
+```
+
+`parent_ph_mask`, `child_ph_union_mask`, `ph_soft_attention`, `anchor_lifetime_map`은 모델 입력에서 제거했습니다. PH는 여전히 proposal/hierarchy 생성에 쓰지만, 넓은 binary/attention mask를 U-Net에 직접 주지 않습니다.
 
 핵심은 이겁니다.
 
 ```text
 PH hierarchy = region/crop 구조를 rigid하게 결정
 GT target = PH mask 내부로 제한하지 않고 crop 내부 전체에서 생성
-loss/attention = PH hierarchy를 soft 또는 multi-channel prior로 사용
+model input = brightness + persistence + seed만 사용
 ```
 
-즉 PH는 “정답 영역”이 아니라 **좌표계/구조/관심도 prior**로 격상시키는 겁니다.
+즉 PH는 “정답 영역”이 아니라 **좌표계/구조/후보 패치 prior**로 격상시키는 겁니다.
 
 **제안 구조**
 각 큰 PH parent region을 하나의 training sample로 봅니다.
 
 ```text
 parent PH region crop
-├─ child PH masks
 ├─ peak/seed map
 ├─ persistence score map
-├─ distance-to-mask map
-└─ crop 내부 전체 GT density target
+└─ crop 내부 hard pixel target
 ```
 
 모델 입력:
 
 ```text
 channel 0: DNB brightness crop
-channel 1: parent PH mask
-channel 2: child PH union mask
-channel 3: PH seed/peak map
-channel 4: persistence score map
-channel 5: distance/soft attention map
+channel 1: persistence score map
+channel 2: PH seed/peak map
 ```
 
 GT target:
 
 ```text
-crop 내부 모든 GT point 사용
-Gaussian kernel로 density target 생성
-sum-preserving
+crop 내부 모든 GT count pixel 사용
+Y_pixel = 1[raw_count > 0]
 PH mask 내부 여부로 GT를 버리지 않음
 ```
 
-loss:
-
-```text
-base loss: crop 전체 또는 valid crop 전체
-weighted loss: PH hierarchy soft mask로 내부를 더 강하게
-```
-
-예:
-
-```text
-loss_weight = 0.25 + 0.75 * soft_ph_attention
-```
-
-이러면 PH 밖 GT도 학습에 남고, PH 안쪽은 더 강하게 학습됩니다.
+loss는 valid owner mask만 사용합니다. PH attention으로 loss를 재가중하지 않습니다.
 
 **왜 이게 좋은가**
 이 결합은 네 요구 두 개를 동시에 만족합니다.
 
-- 2의 장점: PH hierarchy가 rigid하게 crop과 구조를 잡아줌
-- 3의 장점: PH가 놓친 GT도 crop 안에 있으면 target에서 사라지지 않음
+- PH hierarchy가 rigid하게 crop과 구조를 잡아줌
+- PH가 놓친 GT도 crop 안에 있으면 target에서 사라지지 않음
 - 밀집 군집: parent region이 넓게 context를 제공
 - 고립 선박: child/seed map이 local cue 제공
 - 모델 입장: “여기가 PH상 중요한 곳”은 알지만, 거기에만 답을 강제당하지 않음
@@ -74,42 +65,14 @@ require_source_in_roi = False
 renormalize_after_roi_mask = False
 ```
 
-대신 crop boundary에서는 kernel을 잘라야 하므로 crop 내부에서는 renormalize합니다.
-
-정확히는:
-
-```text
-GT point가 crop 안에 있음
--> Gaussian kernel 생성
--> crop 밖으로 나간 부분만 제거
--> 남은 kernel을 다시 sum=1로 정규화
--> target에 더함
-```
-
-PH mask로 kernel을 자르지는 않습니다. PH는 target censoring에 쓰면 안 됩니다.
+Gaussian-smoothed density target은 legacy visualization에만 남깁니다. PH는 target censoring에 쓰면 안 됩니다.
 
 **loss mask 정책**
-hard mask 하나로 끝내면 다시 PH 누락 문제가 생깁니다. 그래서 loss는 soft weight가 낫습니다.
-
-예:
+hard pixel target은 valid owner mask 안에서만 학습합니다. PH는 patch를 만들지만 loss weight를 바꾸지 않습니다.
 
 ```text
-loss_weight = valid_crop_mask * (base_weight + ph_weight * ph_soft_attention)
+loss_weight = valid_owner_mask
 ```
-
-추천 초기값:
-
-```text
-base_weight = 0.25
-ph_weight = 0.75
-```
-
-의미:
-
-- crop 전체는 최소 0.25로 학습
-- PH hierarchy 내부/근처는 최대 1.0으로 학습
-- PH 밖 GT도 loss에 반영됨
-- PH가 모델의 attention prior 역할을 함
 
 **계층적 PH crop 방식**
 parent/child 관계는 이렇게 잡으면 됩니다.
@@ -185,13 +148,9 @@ raw_count
 
 ```text
 image
-parent_mask
-child_union_mask
-seed_map
 persistence_map
-soft_attention
+seed_map
 target_density
-loss_weight
 raw_count
 ```
 

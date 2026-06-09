@@ -4,9 +4,9 @@ set -euo pipefail
 PYTHON_BIN="${DNB_AIS_PYTHON:-/Users/jungtaeuk/anaconda3/envs/DNB_AIS/bin/python}"
 CONFIG="${CONFIG:-configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json}"
 SCENE_SPLIT_CSV="${SCENE_SPLIT_CSV:-outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv}"
-RUN_TAG="${RUN_TAG:-pixel_binary_recursive_ph_hardtarget_$(date +%Y%m%d_%H%M%S)}"
+RUN_TAG="${RUN_TAG:-pixel_binary_recursive_ph_min3_hardtarget_$(date +%Y%m%d_%H%M%S)}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/dnb_density/runs/${RUN_TAG}}"
-PATCH_CACHE_DIR="${PATCH_CACHE_DIR:-outputs/dnb_density/patch_caches/pixel_binary_recursive_ph_hardtarget_20260609}"
+PATCH_CACHE_DIR="${PATCH_CACHE_DIR:-outputs/dnb_density/patch_caches/pixel_binary_recursive_ph_min3_hardtarget_20260609}"
 PATCH_CACHE_MODE="${PATCH_CACHE_MODE:-readwrite}"
 
 DEVICE="${DEVICE:-mps}"

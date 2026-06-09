@@ -13,12 +13,10 @@ from .dnb_density_common import (
     DensityTargetConfig,
     _cluster_passes_size,
     _crop_bounds,
-    _loss_weight_from_attention,
     _mask_for_cluster,
     _persistence_map_for_clusters,
     _select_parent_clusters,
     _seed_map_for_clusters,
-    _soft_attention_from_masks,
     make_sum_preserving_density_target,
 )
 from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
@@ -537,26 +535,6 @@ def _union_mask_for_clusters(clusters: list[PHCluster], crop_rc: tuple[int, int,
     return np.maximum.reduce(masks).astype(np.float32, copy=False)
 
 
-def _soft_attention_or_zero(
-    parent_mask: np.ndarray,
-    child_union_mask: np.ndarray,
-    seed_map: np.ndarray,
-    persistence_map: np.ndarray,
-    *,
-    distance_sigma: float,
-) -> np.ndarray:
-    hard = np.maximum(np.maximum(parent_mask, child_union_mask), seed_map)
-    if not bool(np.any(hard > 0)):
-        return np.zeros_like(parent_mask, dtype=np.float32)
-    return _soft_attention_from_masks(
-        parent_mask,
-        child_union_mask,
-        seed_map,
-        persistence_map,
-        distance_sigma=float(distance_sigma),
-    )
-
-
 def build_partitioned_density_patches(
     scene: SceneRaster,
     gt_count_map: np.ndarray,
@@ -628,18 +606,7 @@ def build_partitioned_density_patches(
             radius_pixels=int(patch_config.seed_radius_pixels),
         ) * sea_crop
         persistence_map = _persistence_map_for_clusters(ph_sources, partition.crop_rc, crop_shape) * sea_crop
-        soft_attention = _soft_attention_or_zero(
-            parent_mask,
-            child_union_mask,
-            seed_map,
-            persistence_map,
-            distance_sigma=float(patch_config.attention_distance_sigma),
-        ) * sea_crop
-        loss_weight = _loss_weight_from_attention(
-            soft_attention,
-            base_weight=float(patch_config.attention_base_weight),
-            ph_weight=float(patch_config.attention_ph_weight),
-        ) * owner_mask
+        loss_weight = owner_mask.astype(np.float32, copy=False)
         target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config, domain_mask=owner_mask)
 
         patches.append(
@@ -653,7 +620,6 @@ def build_partitioned_density_patches(
                 child_union_mask=child_union_mask.astype(np.float32, copy=False),
                 seed_map=seed_map.astype(np.float32, copy=False),
                 persistence_map=persistence_map.astype(np.float32, copy=False),
-                soft_attention=soft_attention.astype(np.float32, copy=False),
                 loss_weight=loss_weight.astype(np.float32, copy=False),
                 valid_mask=owner_mask.astype(np.float32, copy=False),
                 target_density=target.astype(np.float32, copy=False),

@@ -37,13 +37,11 @@ Current input channels from `configs/dnb_density_unet_pixel_binary_recursive_ph_
 
 ```text
 0 brightness
-1 parent_ph_mask
-2 child_ph_union_mask
-3 ph_seed_map
-4 ph_persistence_map
-5 ph_soft_attention
-6 anchor_lifetime_map
+1 ph_persistence_map
+2 ph_seed_map
 ```
+
+Parent/child PH masks, soft attention, and anchor lifetime are retained only as proposal-building metadata when needed. They are not U-Net input channels.
 
 ## Core Equations
 

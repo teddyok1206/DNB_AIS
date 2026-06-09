@@ -1,11 +1,11 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "experiment_family": "dnb_density_pixel_binary",
   "role": "main",
   "status": "experiment_pixel_binary_recursive_ph_hardtarget_20260609",
   "locked_on": "2026-06-09",
-  "locked_decision": "Use PH-guided recursive scene partitioning and train the main target as hard pixel occupancy: raw_count > 0. Smoothed GT density is retained only for legacy visualization/compatibility and is not the primary supervised label.",
-  "description": "Pixel-level binary ship-presence experiment on the fixed DNB/AIS split. PH recursively subdivides large anchors before fallback tiles cover remaining sea pixels. The U-Net emits independent per-pixel sigmoid logits; patch-level O/X is an auxiliary head only.",
+  "locked_decision": "Use PH-guided recursive scene partitioning and train the main target as hard pixel occupancy: raw_count > 0. Model input is limited to physically interpretable channels: DNB brightness, PH persistence, and PH seed map.",
+  "description": "Pixel-level binary ship-presence experiment on the fixed DNB/AIS split. PH recursively subdivides large anchors before fallback tiles cover remaining sea pixels. The U-Net emits independent per-pixel sigmoid logits from brightness plus minimal PH structure channels; patch-level O/X is an auxiliary head only.",
   "device": "mps",
   "primary_target": {
     "name": "hard_pixel_occupancy",
@@ -85,18 +85,12 @@
     "child_max_nodes": null,
     "max_children": null,
     "seed_radius_pixels": 1,
-    "attention_distance_sigma": 4.0,
-    "attention_base_weight": 0.25,
-    "attention_ph_weight": 0.75,
     "input_channels": [
       "brightness",
-      "parent_ph_mask",
-      "child_ph_union_mask",
-      "ph_seed_map",
       "ph_persistence_map",
-      "ph_soft_attention",
-      "anchor_lifetime_map"
+      "ph_seed_map"
     ],
+    "input_channel_policy": "Only physically interpretable observation/topology hints are model inputs. Parent/child PH masks, soft attention, and anchor lifetime are proposal metadata only and are not fed to the U-Net.",
     "loss_weight": "valid owner mask only. Pixel binary loss uses raw_count > 0 and does not consume the smoothed target as label."
   },
   "partitioning": {
@@ -145,7 +139,7 @@
   },
   "model": {
     "name": "PixelBinaryOccupancyUNet",
-    "in_channels": 7,
+    "in_channels": 3,
     "out_channels": 1,
     "base_channels": 32,
     "depth": 4,

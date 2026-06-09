@@ -5,7 +5,7 @@ Research code for VIIRS DNB nighttime ship-presence mapping with AIS-derived sup
 The active deep-learning path is now deliberately narrow:
 
 ```text
-DNB GeoTIFF brightness + sea mask + PH hierarchy features
+DNB GeoTIFF brightness + sea mask + minimal PH persistence/seed features
 -> recursive PH exact-cover patches
 -> PixelBinaryOccupancyUNet
 -> per-pixel ship-presence probability
@@ -19,6 +19,7 @@ Older count-regression, occupancy/spatial-softmax, brightness-threshold baseline
 - Active loss: `pixel_binary_occupancy_loss`.
 - Active config: `configs/dnb_density_unet_pixel_binary_recursive_ph_hardtarget_20260609.json`.
 - Active target: hard pixel occupancy, `target_pixel = 1[raw_count > 0]`, masked by the valid partition owner sea mask.
+- Active input channels: `brightness`, `ph_persistence_map`, `ph_seed_map`.
 - Active partitioning: PH anchors first, recursive PH subdivision for oversized anchors, fallback grid for exact sea-pixel coverage.
 - Primary metrics: `pixel_f1`, `pixel_iou`, `pixel_precision`, `pixel_recall`, `pixel_brier`.
 - Secondary diagnostics only: patch-level `occupancy_*`, `spatial_overlap_mean_positive`, and mass-ratio metrics.

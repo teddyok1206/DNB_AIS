@@ -6,102 +6,27 @@ from typing import Any, Iterable
 import numpy as np
 import torch
 import torch.nn.functional as F
-from scipy.ndimage import distance_transform_edt
 from torch.utils.data import Dataset
 
 from .dnb_pipeline_core import PHCluster, PHClusterStore, SceneRaster
 
 DEFAULT_INPUT_CHANNELS = (
     "brightness",
-    "parent_ph_mask",
-    "child_union_mask",
-    "ph_seed_map",
     "ph_persistence_map",
-    "ph_soft_attention",
+    "ph_seed_map",
 )
 
 
-def inverse_radiance_from_arctan_encoded(
-    encoded: np.ndarray,
-    *,
-    scale: float = 1.0e-9,
-) -> np.ndarray:
-    """Invert the STEP3 arctan DNB encoding without clipping or log scaling."""
-
-    arr = np.asarray(encoded, dtype=np.float32)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        inverse = float(scale) * np.tan((np.pi / 2.0) * arr)
-    return inverse.astype(np.float32, copy=False)
-
-
-def brightness_power_from_encoded(encoded: np.ndarray, exponent: float) -> np.ndarray:
-    arr = np.asarray(encoded, dtype=np.float32)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        powered = np.power(arr, float(exponent))
-    return powered.astype(np.float32, copy=False)
-
-
-def inverse_ratio_from_arctan_encoded(encoded: np.ndarray) -> np.ndarray:
-    arr = np.asarray(encoded, dtype=np.float32)
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        ratio = np.tan((np.pi / 2.0) * arr)
-    return ratio.astype(np.float32, copy=False)
-
-
-def stabilized_inverse_ratio_from_encoded(encoded: np.ndarray, cap: float) -> np.ndarray:
-    ratio = inverse_ratio_from_arctan_encoded(encoded)
-    cap = max(float(cap), 1.0e-12)
-    scaled = ratio / cap
-    return np.clip(scaled, 0.0, 1.0).astype(np.float32, copy=False)
-
-
-def _brightness_power_exponent(channel_name: str) -> float | None:
-    normalized = str(channel_name).strip().lower().replace("-", "_")
-    for prefix in ("brightness_gamma_", "brightness_power_", "encoded_gamma_", "encoded_power_"):
-        if normalized.startswith(prefix):
-            value = normalized[len(prefix) :].replace("p", ".")
-            return float(value)
-    if normalized in {"brightness_gamma2", "brightness_power2", "encoded_gamma2", "encoded_power2"}:
-        return 2.0
-    return None
-
-
 def _channel_array_for_patch(patch: "DensityPatch", channel_name: str) -> np.ndarray:
-    normalized = str(channel_name).strip().lower()
+    normalized = str(channel_name).strip().lower().replace("-", "_")
     if normalized in {"brightness", "encoded_brightness", "arctan_brightness"}:
         return patch.image
-    exponent = _brightness_power_exponent(normalized)
-    if exponent is not None:
-        return brightness_power_from_encoded(patch.image, exponent)
-    if normalized in {"inverse_ratio", "radiance_ratio"}:
-        return inverse_ratio_from_arctan_encoded(patch.image)
-    if normalized in {"inverse_ratio_p99_5p478349", "stabilized_inverse_p99_5p478349"}:
-        return stabilized_inverse_ratio_from_encoded(patch.image, 5.478349152183705)
-    if normalized in {"inverse_radiance", "raw_inverse_radiance", "radiance"}:
-        return inverse_radiance_from_arctan_encoded(patch.image)
-    if normalized in {"parent_ph_mask", "parent_mask", "roi_mask", "ph_roi_mask"}:
-        return patch.parent_mask
-    if normalized in {"child_ph_union_mask", "child_union_mask"}:
-        return patch.child_union_mask
-    if normalized in {"ph_seed_map", "seed_map"}:
-        return patch.seed_map
     if normalized in {"ph_persistence_map", "persistence_map"}:
         return patch.persistence_map
-    if normalized in {"ph_soft_attention", "soft_attention"}:
-        return patch.soft_attention
-    if normalized in {"anchor_lifetime_map", "ph_anchor_lifetime_map", "lifetime_map"}:
-        return np.full_like(patch.image, max(float(patch.lifetime), 0.0), dtype=np.float32)
-    if normalized in {"anchor_lifetime_valid_map", "ph_anchor_lifetime_valid_map", "lifetime_valid_map"}:
-        return np.asarray(patch.valid_mask, dtype=np.float32) * np.float32(max(float(patch.lifetime), 0.0))
-    if normalized in {"loss_weight"}:
-        return patch.loss_weight
-    if normalized in {"valid_mask", "owner_mask"}:
-        return patch.valid_mask
-    if normalized in {"target_density", "target"}:
-        return patch.target_density
-    if normalized in {"raw_count"}:
-        return patch.raw_count
-    raise ValueError(f"Unsupported density input channel: {channel_name}")
+    if normalized in {"ph_seed_map", "seed_map"}:
+        return patch.seed_map
+    supported = ", ".join(DEFAULT_INPUT_CHANNELS)
+    raise ValueError(f"Unsupported density input channel: {channel_name}. Active channels are: {supported}")
 
 
 @dataclass(frozen=True)
@@ -128,9 +53,6 @@ class DensityPatchConfig:
     child_max_nodes: int | None = None
     max_children: int | None = None
     seed_radius_pixels: int = 1
-    attention_distance_sigma: float = 4.0
-    attention_base_weight: float = 0.25
-    attention_ph_weight: float = 0.75
 
 
 @dataclass
@@ -144,7 +66,6 @@ class DensityPatch:
     child_union_mask: np.ndarray
     seed_map: np.ndarray
     persistence_map: np.ndarray
-    soft_attention: np.ndarray
     loss_weight: np.ndarray
     valid_mask: np.ndarray
     target_density: np.ndarray
@@ -416,39 +337,6 @@ def _persistence_map_for_clusters(
     return persistence.astype(np.float32, copy=False)
 
 
-def _soft_attention_from_masks(
-    parent_mask: np.ndarray,
-    child_union_mask: np.ndarray,
-    seed_map: np.ndarray,
-    persistence_map: np.ndarray,
-    *,
-    distance_sigma: float,
-) -> np.ndarray:
-    hard = np.maximum(parent_mask, child_union_mask)
-    hard = np.maximum(hard, seed_map)
-    if float(distance_sigma) <= 0.0:
-        soft = hard.astype(np.float32, copy=True)
-    else:
-        distance = distance_transform_edt(hard <= 0)
-        sigma = max(float(distance_sigma), 1.0e-6)
-        soft = np.exp(-0.5 * (distance / sigma) ** 2).astype(np.float32)
-        soft[hard > 0] = 1.0
-    soft = np.maximum(soft, np.asarray(persistence_map, dtype=np.float32))
-    return np.clip(soft, 0.0, 1.0).astype(np.float32, copy=False)
-
-
-def _loss_weight_from_attention(
-    soft_attention: np.ndarray,
-    *,
-    base_weight: float,
-    ph_weight: float,
-) -> np.ndarray:
-    base = max(float(base_weight), 0.0)
-    ph = max(float(ph_weight), 0.0)
-    weight = base + ph * np.asarray(soft_attention, dtype=np.float32)
-    return weight.astype(np.float32, copy=False)
-
-
 def build_density_patches(
     scene: SceneRaster,
     gt_count_map: np.ndarray,
@@ -502,18 +390,7 @@ def build_density_patches(
             radius_pixels=int(patch_config.seed_radius_pixels),
         ) * valid_crop
         persistence_map = _persistence_map_for_clusters(persistence_sources, crop_rc, image_crop.shape) * valid_crop
-        soft_attention = _soft_attention_from_masks(
-            parent_mask,
-            child_union_mask,
-            seed_map,
-            persistence_map,
-            distance_sigma=float(patch_config.attention_distance_sigma),
-        ) * valid_crop
-        loss_weight = _loss_weight_from_attention(
-            soft_attention,
-            base_weight=float(patch_config.attention_base_weight),
-            ph_weight=float(patch_config.attention_ph_weight),
-        ) * valid_crop
+        loss_weight = valid_crop.astype(np.float32, copy=False)
         target = make_sum_preserving_density_target(raw_crop, parent_mask, target_config, domain_mask=valid_crop)
         patches.append(
             DensityPatch(
@@ -526,7 +403,6 @@ def build_density_patches(
                 child_union_mask=child_union_mask.astype(np.float32, copy=False),
                 seed_map=seed_map.astype(np.float32, copy=False),
                 persistence_map=persistence_map.astype(np.float32, copy=False),
-                soft_attention=soft_attention.astype(np.float32, copy=False),
                 loss_weight=loss_weight.astype(np.float32, copy=False),
                 valid_mask=valid_crop.astype(np.float32, copy=False),
                 target_density=target.astype(np.float32, copy=False),
@@ -569,7 +445,6 @@ def density_patch_collate(
     child_union_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     seed_map = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     persistence_map = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
-    soft_attention = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     loss_weight = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     valid_mask = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
     raw_count = torch.zeros((batch_size, 1, max_h, max_w), dtype=torch.float32)
@@ -583,7 +458,6 @@ def density_patch_collate(
         child = torch.from_numpy(np.asarray(patch.child_union_mask, dtype=np.float32))
         seed = torch.from_numpy(np.asarray(patch.seed_map, dtype=np.float32))
         persistence = torch.from_numpy(np.asarray(patch.persistence_map, dtype=np.float32))
-        attention = torch.from_numpy(np.asarray(patch.soft_attention, dtype=np.float32))
         weight = torch.from_numpy(np.asarray(patch.loss_weight, dtype=np.float32))
         valid = torch.from_numpy(np.asarray(patch.valid_mask, dtype=np.float32))
         y = torch.from_numpy(np.asarray(patch.target_density, dtype=np.float32))
@@ -600,7 +474,6 @@ def density_patch_collate(
         child_union_mask[idx, 0, :h, :w] = child
         seed_map[idx, 0, :h, :w] = seed
         persistence_map[idx, 0, :h, :w] = persistence
-        soft_attention[idx, 0, :h, :w] = attention
         loss_weight[idx, 0, :h, :w] = weight
         valid_mask[idx, 0, :h, :w] = valid
         raw_count[idx, 0, :h, :w] = raw
@@ -635,7 +508,6 @@ def density_patch_collate(
         "child_union_mask": child_union_mask,
         "seed_map": seed_map,
         "persistence_map": persistence_map,
-        "soft_attention": soft_attention,
         "loss_weight": loss_weight,
         "valid_mask": valid_mask,
         "raw_count": raw_count,
@@ -655,7 +527,6 @@ def move_density_batch_to_device(batch: dict[str, Any], device: torch.device | s
         "child_union_mask",
         "seed_map",
         "persistence_map",
-        "soft_attention",
         "loss_weight",
         "valid_mask",
         "raw_count",

@@ -30,7 +30,19 @@ The collate path now carries `raw_count`, and `pixel_binary_occupancy_loss` buil
 
 `PixelBinaryOccupancyUNet` emits `pixel_logits`. The prediction is `sigmoid(pixel_logits)`, not a spatial softmax. There is no forced per-patch probability mass allocation.
 
-5. Auxiliary options are separated
+5. Minimal physically interpretable input channels
+
+The active U-Net input is fixed to three channels:
+
+```text
+brightness
+ph_persistence_map
+ph_seed_map
+```
+
+Parent PH masks, child PH union masks, soft attention maps, and anchor lifetime maps are not model inputs. They are too easy for the network to use as broad proposal shortcuts and are less physically direct than brightness, persistence, and seed evidence.
+
+6. Auxiliary options are separated
 
 Patch-level O/X remains as a small auxiliary regularizer. Dice and smoothed-density paths are explicit optional knobs, disabled in the first run.
 
@@ -66,6 +78,7 @@ Important separation:
 
 - Main target: `primary_target.definition`
 - Main loss: `training.loss.name = pixel_binary_occupancy_loss`
+- Main input channels: `patching.input_channels = [brightness, ph_persistence_map, ph_seed_map]`
 - Recursive PH: `partitioning.hierarchical_ph.recursive`
 - Auxiliary-only knobs: `auxiliary_options`
 
@@ -166,3 +179,30 @@ Next controlled changes:
 - Inspect qualitative FP/FN previews before changing the model; current previews show broad positive probability in some valid fallback regions.
 - Run a small controlled loss sweep before adding architecture complexity: `pixel_pos_weight` around `128`, `256`, and `512`, and optionally one Dice/Tversky auxiliary run.
 - Consider a separately reported tolerance-band pixel metric if exact AIS-to-DNB pixel alignment is too strict, but keep hard labels as the main target unless that premise is intentionally changed.
+
+## Input Channel Simplification
+
+After the first result, the active input policy was simplified permanently:
+
+```text
+keep:
+  brightness
+  ph_persistence_map
+  ph_seed_map
+
+remove as U-Net inputs:
+  parent_ph_mask
+  child_ph_union_mask
+  ph_soft_attention
+  anchor_lifetime_map
+```
+
+Rationale:
+
+- `brightness` is the actual DNB observation.
+- `ph_persistence_map` captures physically meaningful topological strength.
+- `ph_seed_map` gives sparse local PH anchor evidence.
+- Broad binary PH masks and soft attention can encourage false-positive blobs over proposal regions.
+- Anchor lifetime is mostly patch metadata and does not provide pixel-local physical evidence.
+
+PH remains central to recursive proposal generation and exact-cover patch construction. It is no longer exposed to the U-Net as broad binary masks or soft-attention fields.

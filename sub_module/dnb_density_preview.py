@@ -95,18 +95,16 @@ def save_density_patch_previews(
     output_dir.mkdir(parents=True, exist_ok=True)
     paths: list[str] = []
     for patch in patches[: max(int(limit), 0)]:
+        hard_target = (np.asarray(patch.raw_count, dtype=np.float32) > 0).astype(np.float32) * np.asarray(patch.valid_mask, dtype=np.float32)
         panels = [
             ("brightness", patch.image, "magma"),
-            ("parent PH mask", patch.parent_mask, "gray"),
-            ("child PH union", patch.child_union_mask, "gray"),
-            ("seed map", patch.seed_map, "gray"),
-            ("persistence map", patch.persistence_map, "viridis"),
-            ("soft attention", patch.soft_attention, "viridis"),
+            ("PH persistence input", patch.persistence_map, "viridis"),
+            ("PH seed input", patch.seed_map, "gray"),
+            ("hard target raw_count > 0", hard_target, "gray"),
             ("raw GT count", patch.raw_count, "viridis"),
-            ("crop-level density target", patch.target_density, "viridis"),
-            ("loss weight", patch.loss_weight, "viridis"),
+            ("valid owner mask", patch.valid_mask, "gray"),
         ]
-        fig, axes = plt.subplots(3, 3, figsize=(14, 11), constrained_layout=True)
+        fig, axes = plt.subplots(2, 3, figsize=(12, 7.5), constrained_layout=True)
         for ax, (title, arr, cmap) in zip(axes.ravel(), panels):
             im = ax.imshow(arr, cmap=cmap)
             ax.set_title(title)

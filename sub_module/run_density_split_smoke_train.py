@@ -198,9 +198,6 @@ def patch_config_from_config(config: dict[str, Any], max_patches: int) -> Densit
         child_max_nodes=patching.get("child_max_nodes"),
         max_children=patching.get("max_children"),
         seed_radius_pixels=int(patching.get("seed_radius_pixels", 1)),
-        attention_distance_sigma=float(patching.get("attention_distance_sigma", 4.0)),
-        attention_base_weight=float(patching.get("attention_base_weight", 0.25)),
-        attention_ph_weight=float(patching.get("attention_ph_weight", 0.75)),
     )
 
 
@@ -892,9 +889,9 @@ def save_inference_previews(
                     panels.append((f"input {channel_idx}: {channel_name}", arr, preview_cmap_for_name(channel_name), vmin, vmax))
                 panels.extend(
                     [
-                        ("target occupancy/spatial density", target_arr, "viridis", 0.0, density_vmax),
-                        ("pred occupancy evidence", pred_arr, "viridis", 0.0, density_vmax),
-                        ("abs error", error_arr, "inferno", 0.0, error_vmax),
+                        ("target hard pixel occupancy", target_arr, "viridis", 0.0, density_vmax),
+                        ("pred pixel probability", pred_arr, "viridis", 0.0, density_vmax),
+                        ("abs prob error", error_arr, "inferno", 0.0, error_vmax),
                         ("valid owner mask", valid_arr, "gray", 0.0, 1.0),
                     ]
                 )

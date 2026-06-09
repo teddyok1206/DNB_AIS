@@ -11,7 +11,7 @@ import torch.nn.functional as F
 @dataclass(frozen=True)
 class DensityModelConfig:
     name: str = "PixelBinaryOccupancyUNet"
-    in_channels: int = 7
+    in_channels: int = 3
     out_channels: int = 1
     base_channels: int = 32
     depth: int = 4
@@ -65,7 +65,7 @@ class PixelBinaryOccupancyUNet(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 7,
+        in_channels: int = 3,
         out_channels: int = 1,
         base_channels: int = 32,
         depth: int = 4,
