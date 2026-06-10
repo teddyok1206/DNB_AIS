@@ -117,6 +117,46 @@ sum-preserving density/count mass
 
 Brightness is a score baseline, not a calibrated probability. Report Brier/reliability bins for the model probability map, not for raw brightness unless a separate calibration model is explicitly fitted.
 
+## Experiment Roadmap
+
+Current gate experiment:
+
+```text
+run: smoothl1_probability_activefull_e24_20260610_120821
+split: outputs/dnb_density/splits/ox_spatial_25pct_63_15_14_20260609_011421/scene_split.csv
+scope: active 25% day-level split, all scenes in that split
+patch budget: max_patches_per_scene = 32
+patch balance: positive_patches_per_scene = 16, negative_patches_per_scene = 16
+epochs: 24
+purpose: verify whether the SmoothL1 probability-field target keeps model-vs-brightness ranking lift after scaling beyond the 20-scene smoke run
+```
+
+Decision rule:
+
+```text
+If the active-full 32-patch run shows meaningful held-out test lift over raw DNB brightness, run the next full-dataset experiment.
+Meaningful means average precision and top-k precision remain consistently above the brightness baseline on test, not just on validation.
+```
+
+Next contingent full-dataset experiment:
+
+```text
+split: outputs/dnb_density/splits/ox_spatial_full_250_60_55_20260609_005208/scene_split.csv
+scope: full available 2025 day-level split
+patch budget: max_patches_per_scene = 64
+recommended balance: positive_patches_per_scene = 32, negative_patches_per_scene = 32
+epochs: start at 16; extend to 24 only if validation/test diagnostics remain useful and runtime allows
+expected runtime: roughly 9-12 hours on the current MPS workstation
+cache policy: create a new cache; do not delete existing 20-scene or active-full caches
+```
+
+Rationale:
+
+```text
+64 patches per scene increases within-scene coverage for dense and heterogeneous DNB scenes while keeping the experiment tractable.
+The current 32-patch active-full run is the gate because it tests scaling behavior without spending a full overnight run first.
+```
+
 ## Proposed Final Report Outline
 
 ### 1. Abstract
