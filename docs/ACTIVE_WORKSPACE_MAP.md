@@ -10,6 +10,7 @@ Keep this map updated when the canonical path layout changes.
 - `scripts/`: repo maintenance and long-running operational helpers.
 - `docs/`: design decisions, methodology notes, workflow records, and curated experiment interpretation.
 - `docs/experiments/`: curated lightweight experiment reports promoted out of the active STEP3 runtime folder.
+- `reports/eesrl_ieee_final/`: active IEEE/EESRL final-report workspace with draft documents, templates, and curated figure assets.
 - `outputs/`: runtime outputs and smoke-test diagnostics; ignored by git except `outputs/README.md`.
 - `artifacts/`: long-lived model/checkpoint metadata; heavy files are not tracked.
 - `[3]_DNB_AIS - (STEP 3)/`: active DNB/AIS operational workspace for current data preparation and bbox generation.
@@ -47,6 +48,7 @@ Archive policy:
 ## Documentation Policy
 
 - Put durable design docs in `docs/`.
+- Put final-report drafting materials, IEEE templates, and curated report figures in `reports/eesrl_ieee_final/`.
 - Put raw or chronological agent logs in `codex_logs/`.
 - Keep one-off notebook outputs and generated figures in `outputs/`, not in git.
 - If a generated result becomes important, promote only a small curated summary or figure to `docs/`.
