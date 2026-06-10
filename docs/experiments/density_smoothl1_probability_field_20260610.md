@@ -128,3 +128,21 @@ Scale the same setup further before adding new modeling ideas:
 2. Increase scene coverage using a new cache, preserving all old caches.
 3. Run a controlled brightness-only version after the larger PH-assisted run, so PH's contribution can be isolated from the loss/target change.
 4. Keep AP, top-k precision lift over raw brightness, reliability bins, and selected visual previews as the main reporting metrics.
+
+## Future Idea: Probability-Gated DNB
+
+Treat the learned probability map as a possible radiance correction gate:
+
+```text
+gated_DNB = raw_DNB * probability^gamma
+```
+
+This should remain a future/derived-product idea, not the primary metric. The primary claim is still that model probability ranks AIS-derived ship presence better than raw DNB brightness. The gated map may be useful as a ship-presence-weighted DNB visualization or correction filter, especially when raw DNB is bright but not all bright pixels are equally ship-like.
+
+Initial visual probe:
+
+```text
+outputs/dnb_density/runs/smoothl1_probability_20scene_e12_20260610_111141/analysis_previews/analysis_preview_03_idx118_ph_child_824_gamma_gated_dnb.png
+```
+
+Use `gamma < 1` for a softer correction, `gamma = 1` for direct gating, and `gamma > 1` for aggressive suppression of low-probability bright pixels.
